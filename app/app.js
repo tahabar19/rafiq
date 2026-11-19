@@ -133,6 +133,8 @@ function etatLobby() {
 async function chargerMoi() {
   const { data } = await sb.from("profils").select("*").eq("id", E.session.user.id).single();
   E.moi = data;
+  const { data: tr } = await sb.from("triche").select("user_id").eq("user_id", E.session.user.id).maybeSingle();
+  E.triche = !!tr;
   E.calendrier = null;
   if (data?.mosquee_url) {
     const { data: h } = await sb.from("horaires_mosquee").select("calendrier").eq("url", data.mosquee_url).maybeSingle();
@@ -774,6 +776,7 @@ async function vueReglages() {
   const perm = "Notification" in window ? Notification.permission : "absent";
   let abonne = false;
   try { const reg = await navigator.serviceWorker?.getRegistration(); abonne = !!(await reg?.pushManager?.getSubscription()); } catch {}
+  const triche = E.triche ? await sectionTriche().catch(() => "") : "";
 
   app.innerHTML = `
   <main class="page pile-l">
@@ -796,6 +799,8 @@ async function vueReglages() {
       </form>` : ""}
       ${!avant ? '<p class="doux petit" style="margin:0">Le lobby a commencé : les objectifs sont figés.</p>' : ""}
     </section>` : ""}
+
+    ${triche}
 
     <section class="pile"><h3>Ma mosquée (horaires de prière)</h3>
       <div class="carte pile">
@@ -835,6 +840,12 @@ async function vueReglages() {
     </section>
   </main>${onglets()}`;
 
+  app.querySelectorAll("[data-lier]").forEach((sel) => sel.onchange = async () => {
+    if (!sel.value) return;
+    const { error } = await sb.rpc("lier_objectifs", { p_a: sel.dataset.lier, p_b: sel.value });
+    if (error) return toast(traduire(error));
+    toast("Objectifs liés 🤫"); rendre();
+  });
   const fp = app.querySelector("#perso");
   if (fp) {
     fp.type.onchange = () => { app.querySelector("#heure-perso").hidden = fp.type.value !== "horaire"; };
@@ -868,6 +879,38 @@ async function vueReglages() {
     } catch (e) { toast(traduire(e)); }
   };
 }
+// ---------- Mode triche (visible uniquement par les comptes autorisés) ----------
+async function sectionTriche() {
+  await chargerLobbies();
+  const autresL = E.lobbies.filter((l) => l.id !== E.lobby.id && l.date_fin >= versDate(local().jourNum));
+  const [{ data: objs }, { data: liens }] = await Promise.all([
+    autresL.length ? sb.from("objectifs").select("id, titre, emoji, lobby_id, owner, ordre").in("lobby_id", autresL.map((l) => l.id)) : { data: [] },
+    sb.from("liens_triche").select("objectif_id, groupe"),
+  ]);
+  const ailleurs = (objs || []).filter((o) => !o.owner || o.owner === E.moi.id).sort((a, b) => (!!a.owner - !!b.owner) || a.ordre - b.ordre);
+  const groupeDe = Object.fromEntries((liens || []).map((l) => [l.objectif_id, l.groupe]));
+  const nomL = (id) => E.lobbies.find((l) => l.id === id)?.nom || "?";
+  const miens = objectifsDe(E.moi.id);
+  const lignes = miens.map((o) => {
+    const g = groupeDe[o.id];
+    const lies = g ? ailleurs.filter((x) => groupeDe[x.id] === g) : [];
+    const pris = new Set(lies.map((x) => x.lobby_id));
+    const choix = autresL.filter((l) => !pris.has(l.id)).map((l) => {
+      const os = ailleurs.filter((x) => x.lobby_id === l.id);
+      return os.length ? `<optgroup label="${esc(l.nom)}">${os.map((x) => `<option value="${x.id}">${esc(x.emoji)} ${esc(x.titre)}</option>`).join("")}</optgroup>` : "";
+    }).join("");
+    return `<div class="objectif" style="flex-wrap:wrap">
+      <div class="emoji">${esc(o.emoji)}</div>
+      <div class="txt"><b>${esc(o.titre)}</b>${lies.length ? `<small>${lies.map((x) => `<span class="chip">${esc(nomL(x.lobby_id))} · ${esc(x.emoji)} ${esc(x.titre)} <button class="lien" data-a="delier" data-id="${x.id}" aria-label="Délier">✕</button></span>`).join(" ")}</small>` : ""}</div>
+      ${choix ? `<select data-lier="${o.id}" aria-label="Lier à un objectif d'un autre lobby" style="flex:1 1 100%;margin-top:6px"><option value="">+ Valider aussi dans…</option>${choix}</select>` : ""}
+    </div>`;
+  }).join("");
+  return `<section class="pile"><h3>🤫 Mode triche</h3><div class="carte pile">
+    <p class="doux petit" style="margin:0">Lie un objectif d'ici à un objectif d'un autre lobby : une seule photo valide les deux. Personne d'autre ne voit cette section ni tes autres lobbies.</p>
+    ${autresL.length ? `<div style="padding-block:4px">${lignes || '<p class="doux petit">Aucun objectif.</p>'}</div>` : '<p class="doux petit" style="margin:0">Rejoins un autre lobby pour pouvoir lier des objectifs.</p>'}
+  </div></section>`;
+}
+
 async function rechargerObjectifs() {
   const { data } = await sb.from("objectifs").select("*").eq("lobby_id", E.lobby.id).order("ordre"); E.objectifs = data || [];
 }
@@ -902,7 +945,17 @@ async function activerPush() {
 let flux = null;
 function arreterFlux() { flux?.getTracks().forEach((t) => t.stop()); flux = null; }
 
+// Mode triche : objectifs des autres lobbies liés à celui-ci (validés par la même photo)
+async function objectifsLies(objectif) {
+  if (!E.triche) return [];
+  const { data: l } = await sb.from("liens_triche").select("groupe").eq("objectif_id", objectif.id).maybeSingle();
+  if (!l) return [];
+  const { data } = await sb.from("liens_triche").select("objectifs(id, titre, emoji, lobby_id)").eq("groupe", l.groupe).neq("objectif_id", objectif.id);
+  return (data || []).map((x) => x.objectifs).filter(Boolean);
+}
+
 async function ouvrirCamera(objectif) {
+  const lies = await objectifsLies(objectif).catch(() => []);
   const ui = document.createElement("div");
   ui.className = "camera";
   let face = "environment", intervalle;
@@ -944,6 +997,8 @@ async function ouvrirCamera(objectif) {
     ui.innerHTML = `<div class="vue"></div><div class="bas" style="gap:12px"><button class="btn second" data-c="reprendre" style="flex:1">Reprendre</button><button class="btn" data-c="envoyer" style="flex:1.4">Envoyer la preuve</button></div>`;
     c.className = "apercu"; ui.querySelector(".vue").appendChild(c);
     ui.dataset.quand = quand.toISOString(); ui._canvas = c;
+    // même photo, tamponnée avec le titre de chaque objectif lié
+    ui._lies = lies.map((o) => ({ id: o.id, canvas: composer(source, w, h, miroir, o, quand) }));
   };
 
   ui.addEventListener("click", async (ev) => {
@@ -957,12 +1012,14 @@ async function ouvrirCamera(objectif) {
       const blob = await new Promise((r) => ui._canvas.toBlob(r, "image/jpeg", 0.82));
       const fd = new FormData();
       fd.append("objectif_id", objectif.id); fd.append("pris_client", ui.dataset.quand); fd.append("photo", blob, "preuve.jpg");
+      for (const l of ui._lies || []) fd.append("photo_" + l.id, await new Promise((r) => l.canvas.toBlob(r, "image/jpeg", 0.82)), "preuve.jpg");
       const r = await appelFonction("preuve", fd, false);
       if (r.erreur) { btn.disabled = false; btn.textContent = "Réessayer"; return toast(r.erreur); }
       E.preuves.unshift(r.preuve);
       fermer();
       const essai = r.preuve.jour < E.lobby.date_debut ? " (essai : le lobby n'a pas commencé)" : "";
-      toast((r.preuve.statut === "a_temps" ? `✅ À temps ! +${pts(r.preuve.points)}` : `⏳ En retard, +${pts(r.preuve.points)}`) + essai);
+      const ailleurs = r.liees ? ` · 🤫 validé aussi dans ${r.liees} autre${r.liees > 1 ? "s" : ""} lobby` : "";
+      toast((r.preuve.statut === "a_temps" ? `✅ À temps ! +${pts(r.preuve.points)}` : `⏳ En retard, +${pts(r.preuve.points)}`) + essai + ailleurs);
       rendre();
     }
   });
@@ -1018,6 +1075,7 @@ document.addEventListener("click", async (ev) => {
     toast("Preuve refusée : 0 point"); rafraichir();
   }
   if (a === "accepter") { const { error } = await sb.rpc("accepter_preuve", { p_preuve: id }); if (error) return toast(traduire(error)); rafraichir(); }
+  if (a === "delier") { const { error } = await sb.rpc("delier_objectif", { p_objectif: id }); if (error) return toast(traduire(error)); toast("Lien retiré"); rendre(); }
   if (a === "suppr-perso") { const { error } = await sb.rpc("supprimer_objectif_perso", { p_objectif: id }); if (error) return toast(traduire(error)); await rechargerObjectifs(); rendre(); }
   if (a === "partager") {
     const lien = el.dataset.lien, texte = `Rejoins mon lobby « ${E.lobby.nom} » sur Rafiq (code ${E.lobby.code})`;

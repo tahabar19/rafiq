@@ -264,6 +264,73 @@ drop policy if exists preuves_photos_select on storage.objects;
 create policy preuves_photos_select on storage.objects for select to authenticated using (
   bucket_id = 'preuves' and public.est_membre(((storage.foldername(name))[1])::uuid));
 
+-- ---------- Mode triche (réservé à certains comptes) ----------
+-- Lier des objectifs de lobbies différents : une seule preuve les valide tous.
+-- Tables lisibles uniquement par leur propriétaire : les autres membres ne voient ni le mode, ni les liens,
+-- ni les autres lobbies (déjà garanti par les règles des lobbies/membres).
+
+create table if not exists public.triche (
+  user_id uuid primary key references public.profils(id) on delete cascade
+);
+create table if not exists public.liens_triche (
+  user_id uuid not null references public.profils(id) on delete cascade,
+  objectif_id uuid not null references public.objectifs(id) on delete cascade,
+  groupe uuid not null,
+  primary key (user_id, objectif_id)
+);
+create index if not exists liens_triche_groupe_idx on public.liens_triche (user_id, groupe);
+
+alter table public.triche enable row level security;
+alter table public.liens_triche enable row level security;
+drop policy if exists triche_select on public.triche;
+create policy triche_select on public.triche for select to authenticated using (user_id = auth.uid());
+drop policy if exists liens_triche_select on public.liens_triche;
+create policy liens_triche_select on public.liens_triche for select to authenticated using (user_id = auth.uid());
+
+-- Un objectif « à moi » : commun d'un lobby dont je suis membre, ou perso à moi
+create or replace function public.objectif_a_moi(p_objectif uuid) returns objectifs
+language plpgsql stable security definer set search_path = public as $$
+declare ob objectifs;
+begin
+  select * into ob from objectifs where id = p_objectif;
+  if ob.id is null or not est_membre(ob.lobby_id) or (ob.owner is not null and ob.owner <> auth.uid()) then
+    raise exception 'objectif introuvable'; end if;
+  return ob;
+end $$;
+
+create or replace function public.lier_objectifs(p_a uuid, p_b uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare a objectifs; b objectifs; ga uuid; gb uuid; g uuid;
+begin
+  if not exists (select 1 from triche where user_id = auth.uid()) then raise exception 'non autorisé'; end if;
+  a := objectif_a_moi(p_a); b := objectif_a_moi(p_b);
+  if a.lobby_id = b.lobby_id then raise exception 'les deux objectifs sont dans le même lobby'; end if;
+  select groupe into ga from liens_triche where user_id = auth.uid() and objectif_id = a.id;
+  select groupe into gb from liens_triche where user_id = auth.uid() and objectif_id = b.id;
+  g := coalesce(ga, gb, gen_random_uuid());
+  if gb is not null and gb <> g then update liens_triche set groupe = g where user_id = auth.uid() and groupe = gb; end if;
+  insert into liens_triche (user_id, objectif_id, groupe) values (auth.uid(), a.id, g), (auth.uid(), b.id, g)
+  on conflict (user_id, objectif_id) do update set groupe = excluded.groupe;
+  -- Jamais deux objectifs d'un même lobby dans un groupe (sinon une photo validerait deux objectifs visibles)
+  if exists (select 1 from liens_triche l join objectifs o on o.id = l.objectif_id
+             where l.user_id = auth.uid() and l.groupe = g group by o.lobby_id having count(*) > 1) then
+    raise exception 'un objectif de ce lobby est déjà dans ce lien';
+  end if;
+end $$;
+
+create or replace function public.delier_objectif(p_objectif uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare g uuid;
+begin
+  delete from liens_triche where user_id = auth.uid() and objectif_id = p_objectif returning groupe into g;
+  if g is not null and (select count(*) from liens_triche where user_id = auth.uid() and groupe = g) < 2 then
+    delete from liens_triche where user_id = auth.uid() and groupe = g;
+  end if;
+end $$;
+
+-- Activer le mode pour le compte de Taha
+insert into public.triche (user_id) select id from public.profils where pseudo = 'taha' on conflict do nothing;
+
 -- ---------- Temps réel ----------
 do $$ begin
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'preuves') then

@@ -84,90 +84,117 @@ Deno.serve(async (req) => {
     const { data: obj } = await admin.from("objectifs").select("*").eq("id", objectifId).maybeSingle();
     if (!obj) return json({ erreur: "Objectif introuvable." }, 404);
     if (obj.owner && obj.owner !== user.id) return json({ erreur: "Ce n'est pas ton objectif." }, 403);
-    const { data: mb } = await admin.from("membres").select("user_id").eq("lobby_id", obj.lobby_id);
-    if (!mb?.some((m: any) => m.user_id === user.id)) return json({ erreur: "Tu n'es pas dans ce lobby." }, 403);
-    const { data: lobby } = await admin.from("lobbies").select("*").eq("id", obj.lobby_id).single();
     const { data: profil } = await admin.from("profils").select("*").eq("id", user.id).single();
-
     const tz = profil.fuseau || "Europe/Paris";
     const t = local(maintenant, tz);
-    const tAbs = t.jourNum * 1440 + t.minutes;
+    const ctx = { admin, user, profil, t, maintenant, cache: new Map() };
 
-    // ---------- Statut ----------
-    let jourNum: number, statut: "a_temps" | "retard", detail = "";
-    const dejaFait = async (j: number) => {
-      const { data } = await admin.from("preuves").select("id").eq("objectif_id", obj.id).eq("user_id", user.id).eq("jour", versDate(j)).maybeSingle();
-      return !!data;
-    };
+    const r = await valider(ctx, obj, photo);
+    if ("erreur" in r) return json({ erreur: r.erreur }, r.code);
 
-    if (obj.type === "priere") {
-      const i = PRIERES.indexOf(obj.priere);
-      const idx = [0, 2, 3, 4, 5][i]; // position dans [fajr, chourouq, dhuhr, asr, maghrib, isha]
-      const cache = new Map();
-      const fenetre = async (j: number) => {
-        const h = await horairesJour(admin, profil, j, cache);
-        const debut = j * 1440 + h[idx];
-        const fin = obj.priere === "isha" ? (j + 1) * 1440 + (await horairesJour(admin, profil, j + 1, cache))[0]
-          : j * 1440 + h[idx + 1];
-        return { debut, fin };
-      };
-      const auj = await fenetre(t.jourNum);
-      if (tAbs >= auj.debut) {
-        jourNum = t.jourNum;
-        statut = tAbs < auj.fin ? "a_temps" : "retard";
-      } else {
-        jourNum = t.jourNum - 1;
-        if (await dejaFait(jourNum)) return json({ erreur: `Pas encore l'heure : ${NOMS[obj.priere]} à ${hhmm(auj.debut)}.` }, 400);
-        const hier = await fenetre(jourNum);
-        statut = tAbs < hier.fin ? "a_temps" : "retard";
+    // ---------- Mode triche : la même preuve valide les objectifs liés des autres lobbies ----------
+    let liees = 0;
+    const { data: tr } = await admin.from("triche").select("user_id").eq("user_id", user.id).maybeSingle();
+    if (tr) {
+      const { data: lien } = await admin.from("liens_triche").select("groupe").eq("user_id", user.id).eq("objectif_id", obj.id).maybeSingle();
+      if (lien) {
+        const { data: autres } = await admin.from("liens_triche").select("objectifs(*)").eq("user_id", user.id).eq("groupe", lien.groupe).neq("objectif_id", obj.id);
+        for (const { objectifs: o } of (autres || []) as any[]) {
+          if (!o || o.lobby_id === obj.lobby_id || (o.owner && o.owner !== user.id)) continue;
+          const ph = form.get("photo_" + o.id);
+          const rr = await valider(ctx, o, ph instanceof File && ph.size >= 1000 && ph.size <= 3_000_000 ? ph : photo)
+            .catch((e) => ({ erreur: String(e), code: 500 })); // un lien raté ne fait pas échouer la preuve principale
+          if ("preuve" in rr) liees++;
+        }
       }
-      detail = NOMS[obj.priere];
-    } else {
-      const F = enMin(String(lobby.fin_journee).slice(0, 5));
-      jourNum = Math.floor((tAbs - F) / 1440);
-      const o = tAbs - F - jourNum * 1440;
-      const a = obj.heure_debut ? (((enMin(obj.heure_debut) - F) % 1440) + 1440) % 1440 : 0;
-      let b = obj.heure_fin ? (((enMin(obj.heure_fin) - F) % 1440) + 1440) % 1440 : 1440;
-      if (b === 0) b = 1440;
-      if (obj.type === "horaire" && o < a) return json({ erreur: `Trop tôt : à partir de ${obj.heure_debut.slice(0, 5)}.` }, 400);
-      statut = obj.type === "journee" || o <= b ? "a_temps" : "retard";
     }
 
-    if (await dejaFait(jourNum)) return json({ erreur: "Déjà fait pour aujourd'hui ✅" }, 400);
-
-    // ---------- Photo + enregistrement ----------
-    const id = crypto.randomUUID();
-    const chemin = `${obj.lobby_id}/${user.id}/${versDate(jourNum)}_${id}.jpg`;
-    const up = await admin.storage.from("preuves").upload(chemin, await photo.arrayBuffer(), { contentType: "image/jpeg" });
-    if (up.error) return json({ erreur: "Envoi de la photo raté : " + up.error.message }, 500);
-
-    const points = statut === "a_temps" ? obj.pts_temps : obj.pts_retard;
-    const { data: pr, error } = await admin.from("preuves").insert({
-      id, lobby_id: obj.lobby_id, objectif_id: obj.id, user_id: user.id, jour: versDate(jourNum),
-      photo_path: chemin, statut, points, pris_le: maintenant.toISOString(),
-    }).select().single();
-    if (error) {
-      await admin.storage.from("preuves").remove([chemin]);
-      return json({ erreur: error.code === "23505" ? "Déjà fait pour aujourd'hui ✅" : error.message }, 400);
-    }
-
-    // ---------- Notification aux autres ----------
-    const heure = `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(2, "0")}`;
-    const quoi = obj.type === "priere" ? `a prié ${detail}` : `${obj.emoji} ${obj.titre}`;
-    const etat = statut === "a_temps" ? "✅ à temps" : "⏳ en retard";
-    const autres = mb.map((m: any) => m.user_id).filter((x: string) => x !== user.id);
-    await notifier(admin, autres, {
-      title: `${profil.prenom} ${obj.type === "priere" ? "" : "· "}${quoi}`.replace("  ", " "),
-      body: `${etat} — ${heure} · +${points} pt${points > 1 ? "s" : ""}`,
-      url: `./#/lobby/${obj.lobby_id}/preuve/${id}`,
-      tag: id,
-    });
-
-    return json({ ok: true, preuve: pr });
+    return json({ ok: true, preuve: r.preuve, liees });
   } catch (e) {
     return json({ erreur: (e as Error).message }, 500);
   }
 });
+
+// Calcule à temps / en retard pour un objectif, range la photo, enregistre la preuve, prévient les autres membres du lobby.
+type Ctx = { admin: any; user: any; profil: any; t: ReturnType<typeof local>; maintenant: Date; cache: Map<string, any> };
+async function valider(ctx: Ctx, obj: any, photo: File): Promise<{ preuve: any } | { erreur: string; code: number }> {
+  const { admin, user, profil, t, maintenant, cache } = ctx;
+  const { data: mb } = await admin.from("membres").select("user_id").eq("lobby_id", obj.lobby_id);
+  if (!mb?.some((m: any) => m.user_id === user.id)) return { erreur: "Tu n'es pas dans ce lobby.", code: 403 };
+  const { data: lobby } = await admin.from("lobbies").select("*").eq("id", obj.lobby_id).single();
+  const tAbs = t.jourNum * 1440 + t.minutes;
+
+  // ---------- Statut ----------
+  let jourNum: number, statut: "a_temps" | "retard", detail = "";
+  const dejaFait = async (j: number) => {
+    const { data } = await admin.from("preuves").select("id").eq("objectif_id", obj.id).eq("user_id", user.id).eq("jour", versDate(j)).maybeSingle();
+    return !!data;
+  };
+
+  if (obj.type === "priere") {
+    const i = PRIERES.indexOf(obj.priere);
+    const idx = [0, 2, 3, 4, 5][i]; // position dans [fajr, chourouq, dhuhr, asr, maghrib, isha]
+    const fenetre = async (j: number) => {
+      const h = await horairesJour(admin, profil, j, cache);
+      const debut = j * 1440 + h[idx];
+      const fin = obj.priere === "isha" ? (j + 1) * 1440 + (await horairesJour(admin, profil, j + 1, cache))[0]
+        : j * 1440 + h[idx + 1];
+      return { debut, fin };
+    };
+    const auj = await fenetre(t.jourNum);
+    if (tAbs >= auj.debut) {
+      jourNum = t.jourNum;
+      statut = tAbs < auj.fin ? "a_temps" : "retard";
+    } else {
+      jourNum = t.jourNum - 1;
+      if (await dejaFait(jourNum)) return { erreur: `Pas encore l'heure : ${NOMS[obj.priere]} à ${hhmm(auj.debut)}.`, code: 400 };
+      const hier = await fenetre(jourNum);
+      statut = tAbs < hier.fin ? "a_temps" : "retard";
+    }
+    detail = NOMS[obj.priere];
+  } else {
+    const F = enMin(String(lobby.fin_journee).slice(0, 5));
+    jourNum = Math.floor((tAbs - F) / 1440);
+    const o = tAbs - F - jourNum * 1440;
+    const a = obj.heure_debut ? (((enMin(obj.heure_debut) - F) % 1440) + 1440) % 1440 : 0;
+    let b = obj.heure_fin ? (((enMin(obj.heure_fin) - F) % 1440) + 1440) % 1440 : 1440;
+    if (b === 0) b = 1440;
+    if (obj.type === "horaire" && o < a) return { erreur: `Trop tôt : à partir de ${obj.heure_debut.slice(0, 5)}.`, code: 400 };
+    statut = obj.type === "journee" || o <= b ? "a_temps" : "retard";
+  }
+
+  if (await dejaFait(jourNum)) return { erreur: "Déjà fait pour aujourd'hui ✅", code: 400 };
+
+  // ---------- Photo + enregistrement ----------
+  const id = crypto.randomUUID();
+  const chemin = `${obj.lobby_id}/${user.id}/${versDate(jourNum)}_${id}.jpg`;
+  const up = await admin.storage.from("preuves").upload(chemin, await photo.arrayBuffer(), { contentType: "image/jpeg" });
+  if (up.error) return { erreur: "Envoi de la photo raté : " + up.error.message, code: 500 };
+
+  const points = statut === "a_temps" ? obj.pts_temps : obj.pts_retard;
+  const { data: pr, error } = await admin.from("preuves").insert({
+    id, lobby_id: obj.lobby_id, objectif_id: obj.id, user_id: user.id, jour: versDate(jourNum),
+    photo_path: chemin, statut, points, pris_le: maintenant.toISOString(),
+  }).select().single();
+  if (error) {
+    await admin.storage.from("preuves").remove([chemin]);
+    return { erreur: error.code === "23505" ? "Déjà fait pour aujourd'hui ✅" : error.message, code: 400 };
+  }
+
+  // ---------- Notification aux autres ----------
+  const heure = `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(2, "0")}`;
+  const quoi = obj.type === "priere" ? `a prié ${detail}` : `${obj.emoji} ${obj.titre}`;
+  const etat = statut === "a_temps" ? "✅ à temps" : "⏳ en retard";
+  const autres = mb.map((m: any) => m.user_id).filter((x: string) => x !== user.id);
+  await notifier(admin, autres, {
+    title: `${profil.prenom} ${obj.type === "priere" ? "" : "· "}${quoi}`.replace("  ", " "),
+    body: `${etat} — ${heure} · +${points} pt${points > 1 ? "s" : ""}`,
+    url: `./#/lobby/${obj.lobby_id}/preuve/${id}`,
+    tag: id,
+  });
+
+  return { preuve: pr };
+}
 
 async function notifier(admin: any, userIds: string[], payload: Record<string, string>) {
   if (!userIds.length) return 0;
