@@ -227,6 +227,9 @@ Deno.serve(async (req) => {
       const demande = String(corps.demande || "").trim().slice(0, 2000);
       if (!demande) return json({ erreur: "Écris le changement que tu veux." }, 400);
       const r = await demander(`${contexte}\n\nAujourd'hui : ${new Date().toISOString().slice(0, 10)}.\n` +
+        (corps.portee === "regles"
+          ? "La demande vient de la rubrique « Règles du lobby » : elle porte sur les champs du lobby (dates, enjeu, objectifs perso, points par défaut, fin de journée), pas sur les objectifs.\n"
+          : "La demande vient de la rubrique « Objectifs communs » : elle porte sur les objectifs que TOUS les membres doivent faire.\n") +
         `Un membre propose ce changement pour le lobby (il sera soumis au vote de tous) : « ${demande} »\n` +
         `Traduis-le en opérations : "ajouter" (objectif commun, champ objectif), "modifier" (id + objectif complet dans sa nouvelle version), ` +
         `"retirer" (id ; les anciennes preuves gardent leurs points), "lobby" (champs du lobby à changer, null = inchangé). ` +
@@ -250,7 +253,16 @@ Deno.serve(async (req) => {
         return [];
       });
       if (!operations.length) return json({ erreur: "Claude n'a pas compris quoi changer. Reformule ta demande." }, 400);
-      return json({ ok: true, resume: String(r.resume || ""), operations });
+      // Résumé recalculé depuis les opérations retenues : il dit exactement ce qui sera appliqué
+      const titre = (id: string) => { const o = objectifs.find((x) => x.id === id); return o ? `${o.emoji} ${o.titre}` : "un objectif"; };
+      const pt = (o: any) => (o.type === "journee" ? `${o.pts_temps} pt${o.pts_temps > 1 ? "s" : ""}` : `${o.pts_temps} / ${o.pts_retard} pts`);
+      const resume = operations.map((op: any) =>
+        op.op === "ajouter" ? `Ajouter ${op.objectif.emoji} ${op.objectif.titre} (${pt(op.objectif)})`
+        : op.op === "modifier" ? `Modifier ${titre(op.id)}`
+        : op.op === "retirer" ? `Retirer ${titre(op.id)}`
+        : `Changer ${Object.keys(op.champs).map((k) => ({ nom: "le nom", enjeu: "l'enjeu", date_fin: "la date de fin", nb_perso: "le nombre d'objectifs perso", perso_pts_temps: "les points perso", perso_pts_retard: "les points perso en retard", fin_journee: "la fin de journée" } as any)[k] || k).join(", ")}`,
+      ).join(" · ");
+      return json({ ok: true, resume, operations });
     }
 
     return json({ erreur: "Action inconnue." }, 400);

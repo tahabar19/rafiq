@@ -369,3 +369,10 @@ textarea { resize: vertical; min-height: 64px; }
 details > summary { cursor: pointer; list-style: none; padding: 4px 0; }
 details > summary::-webkit-details-marker { display: none; }
 details[open] > summary { margin-bottom: 8px; }
+
+/* Rubriques des réglages */
+.segments { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; background: var(--carte-2); border-radius: 14px; }
+.segments a { text-align: center; padding: 9px 6px; border-radius: 11px; font-weight: 650; font-size: 14px; color: var(--doux); text-decoration: none; }
+.segments a.on { background: var(--carte); color: var(--encre); box-shadow: var(--ombre); }
+details.ajout > summary.btn { width: 100%; }
+details.ajout[open] > summary.btn { margin-bottom: 4px; }
