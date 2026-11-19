@@ -1,5 +1,5 @@
 // Rafiq — service worker : notifications + cache minimal de l'interface
-const VERSION = "rafiq-v2";
+const VERSION = "rafiq-v3";
 const FICHIERS = ["./", "index.html", "style.css", "app.js", "config.js", "vendor/supabase.js", "vendor/adhan.js", "icones/192.png"];
 
 self.addEventListener("install", (e) => {
