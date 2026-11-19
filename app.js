@@ -10,6 +10,7 @@ const IDX = { fajr: 0, dhuhr: 2, asr: 3, maghrib: 4, isha: 5 }; // dans [fajr, c
 const E = {
   session: null, moi: null, lobbies: [], lobby: null, membres: [], objectifs: [], preuves: [],
   calendrier: null, urls: {}, canal: null, lobbyCharge: null, brouillon: null, onglet: "jour",
+  propositions: [], votes: [], ed: {}, edOpts: {}, edition: null, cleClaude: false,
 };
 
 // ---------- Petits outils ----------
@@ -102,11 +103,16 @@ function sousTitre(o) {
   if (o.type === "horaire") {
     if (o.heure_debut && o.heure_fin) return `entre ${o.heure_debut.slice(0, 5)} et ${o.heure_fin.slice(0, 5)}`;
     if (o.heure_fin) return `avant ${o.heure_fin.slice(0, 5)}`;
-    return `à partir de ${o.heure_debut.slice(0, 5)}`;
+    if (o.heure_debut) return `à partir de ${o.heure_debut.slice(0, 5)}`;
+    return "avec horaire";
   }
   return "dans la journée";
 }
-const objectifsDe = (uid) => E.objectifs.filter((o) => !o.owner || o.owner === uid).sort((a, b) => (!!a.owner - !!b.owner) || a.ordre - b.ordre);
+const jourDe = (iso) => versDate(local(new Date(iso)).jourNum);
+// Objectifs actifs (sans jour) ou qui existaient ce jour-là (ajoutés en cours de lobby, retirés après un vote)
+const existeLe = (o, jour) => (jour ? jourDe(o.created_at) <= jour && (!o.retire_le || jourDe(o.retire_le) > jour) : !o.retire_le);
+const objectifsDe = (uid, jour) => E.objectifs.filter((o) => (!o.owner || o.owner === uid) && existeLe(o, jour)).sort((a, b) => (!!a.owner - !!b.owner) || a.ordre - b.ordre);
+const estAdmin = () => E.lobby?.admin === E.moi?.id;
 
 // ---------- Scores ----------
 function scores() {
@@ -135,6 +141,8 @@ async function chargerMoi() {
   E.moi = data;
   const { data: tr } = await sb.from("triche").select("user_id").eq("user_id", E.session.user.id).maybeSingle();
   E.triche = !!tr;
+  const { data: cle } = await sb.rpc("a_cle_claude");
+  E.cleClaude = !!cle;
   E.calendrier = null;
   if (data?.mosquee_url) {
     const { data: h } = await sb.from("horaires_mosquee").select("calendrier").eq("url", data.mosquee_url).maybeSingle();
@@ -155,6 +163,7 @@ async function chargerLobby(id) {
   if (!l.data) throw new Error("Lobby introuvable.");
   E.lobby = l.data; E.membres = (m.data || []).sort((a, b) => a.joined_at.localeCompare(b.joined_at));
   E.objectifs = o.data || []; E.preuves = p.data || [];
+  await chargerPropositions(id);
   E.lobbyCharge = id; E.jourFil = null;
   try { localStorage.setItem("rafiq-lobby", id); } catch {}
   ecouter(id);
@@ -166,12 +175,33 @@ async function urlsPhotos(chemins) {
     for (const x of data || []) if (x.signedUrl) E.urls[x.path] = x.signedUrl;
   }
 }
+async function chargerPropositions(id) {
+  const { data: pr } = await sb.from("propositions").select("*").eq("lobby_id", id).eq("statut", "ouverte").order("created_at");
+  E.propositions = pr || [];
+  const ids = E.propositions.map((x) => x.id);
+  E.votes = ids.length ? (await sb.from("votes").select("*").in("proposition_id", ids)).data || [] : [];
+}
+// Une proposition appliquée peut changer les objectifs et le lobby : on recharge tout
+async function rechargerVotes() {
+  if (!E.lobbyCharge) return;
+  const id = E.lobbyCharge;
+  const [l, o] = await Promise.all([sb.from("lobbies").select("*").eq("id", id).maybeSingle(), sb.from("objectifs").select("*").eq("lobby_id", id).order("ordre")]);
+  await chargerPropositions(id);
+  if (E.lobbyCharge !== id) return;
+  if (l.data) E.lobby = l.data;
+  E.objectifs = o.data || E.objectifs;
+  if (location.hash.startsWith("#/lobby/") && !document.querySelector(".camera, .visio") && !document.activeElement?.matches("input,select,textarea")) rendre();
+}
+let voteT;
 function ecouter(id) {
   if (E.canal?.lobbyId === id) return;
   if (E.canal) sb.removeChannel(E.canal);
-  E.canal = sb.channel("lobby-" + id).on("postgres_changes",
-    { event: "*", schema: "public", table: "preuves", filter: `lobby_id=eq.${id}` },
-    () => rafraichir()).subscribe();
+  const plusTard = () => { clearTimeout(voteT); voteT = setTimeout(rechargerVotes, 300); };
+  E.canal = sb.channel("lobby-" + id)
+    .on("postgres_changes", { event: "*", schema: "public", table: "preuves", filter: `lobby_id=eq.${id}` }, () => rafraichir())
+    .on("postgres_changes", { event: "*", schema: "public", table: "propositions", filter: `lobby_id=eq.${id}` }, plusTard)
+    .on("postgres_changes", { event: "*", schema: "public", table: "votes" }, plusTard)
+    .subscribe();
   E.canal.lobbyId = id;
 }
 let rafraichEnCours = false;
@@ -312,6 +342,10 @@ function ecranCreer() {
     objectifs: [{ ...MODELES.reveil }, { ...MODELES.prieres }, { ...MODELES.rangee }],
   };
   const b = E.brouillon;
+  E.edOpts.creation = {
+    lobbyId: null, pts: 3, bouton: () => "Ajouter aux objectifs communs",
+    action: async (d) => { lire(); b.objectifs.push({ ...d.objectif, heure_debut: d.objectif.heure_debut || "", heure_fin: d.objectif.heure_fin || "" }); viderEd("creation"); ecranCreer(); },
+  };
   const ligneObj = (o, i) => `
     <div class="edit-obj" data-i="${i}">
       <div class="ligne">
@@ -323,7 +357,9 @@ function ecranCreer() {
       <div class="grille-3">
         <label class="champ"><span>Type</span><select data-k="type">
           <option value="horaire" ${o.type === "horaire" ? "selected" : ""}>Avec horaire</option>
-          <option value="journee" ${o.type === "journee" ? "selected" : ""}>Dans la journée</option></select></label>
+          <option value="journee" ${o.type === "journee" ? "selected" : ""}>Dans la journée</option>
+          <option value="priere" ${o.type === "priere" ? "selected" : ""}>Une prière</option></select></label>
+        ${o.type === "priere" ? `<label class="champ"><span>Prière</span><select data-k="priere">${PRIERES.map((p) => `<option value="${p}" ${o.priere === p ? "selected" : ""}>${NOMS[p]}</option>`).join("")}</select></label>` : ""}
         ${o.type === "horaire" ? `<label class="champ"><span>Pas avant</span><input type="time" data-k="heure_debut" value="${esc(o.heure_debut)}"></label>
         <label class="champ"><span>À faire avant</span><input type="time" data-k="heure_fin" value="${esc(o.heure_fin)}"></label>` : ""}
       </div>`}
@@ -354,6 +390,7 @@ function ecranCreer() {
           <button type="button" data-a="ajout-modele" data-m="rangee">+ Maison rangée</button>
           <button type="button" data-a="ajout-modele" data-m="libre">+ Autre</button>
         </div>
+        ${E.cleClaude ? `<div class="carte pile"><h3>✨ Décrire une activité</h3>${editeurHTML("creation")}</div>` : `<p class="doux petit" style="margin:0">Astuce : connecte ton compte Claude (Réglages d'un lobby) pour créer une activité juste en la décrivant.</p>`}
       </section>
       <section class="carte pile">
         <h3>Objectifs perso</h3>
@@ -378,7 +415,7 @@ function ecranCreer() {
       el.querySelectorAll("[data-k]").forEach((inp) => { o[inp.dataset.k] = inp.type === "number" ? +inp.value : inp.value; });
     });
   };
-  form.addEventListener("change", (ev) => { if (ev.target.dataset.k === "type") { lire(); ecranCreer(); } });
+  form.addEventListener("change", (ev) => { if (ev.target.dataset.k === "type") { lire(); const o = b.objectifs[+ev.target.closest(".edit-obj").dataset.i]; if (o.type === "priere" && !o.priere) o.priere = "fajr"; ecranCreer(); } });
   form.addEventListener("click", (ev) => {
     const a = ev.target.closest("[data-a]"); if (!a) return;
     lire();
@@ -431,6 +468,7 @@ function ligneObjectif(o, uid, cliquable) {
   const j = jourObjectif(o), p = preuveDe(o, uid, j);
   let badge;
   if (p?.refusee) badge = `<span class="badge refus">refusée</span>`;
+  else if (p?.contestee) badge = `<span class="badge conteste">contestée</span>`;
   else if (p) badge = `<span class="badge ${p.statut === "a_temps" ? "ok" : "retard"}">${p.statut === "a_temps" ? "✓" : "retard"} +${p.points}</span>`;
   else badge = cliquable ? `<button class="btn petit" data-a="preuve" data-id="${o.id}">${ICONES.photo}Preuve</button>` : `<span class="badge neutre">à faire</span>`;
   const pt = o.type === "journee" ? pts(o.pts_temps) : `${o.pts_temps} / ${o.pts_retard} pts`;
@@ -445,18 +483,23 @@ async function vueJour() {
   const dernieres = autres.map((m) => ({ m, p: E.preuves.find((p) => p.user_id === m.user_id && !p.refusee) }));
   await urlsPhotos(dernieres.map((d) => d.p?.photo_path));
   const sc = scores();
-  const communs = E.objectifs.filter((o) => !o.owner).sort((a, b) => a.ordre - b.ordre);
-  const miens = E.objectifs.filter((o) => o.owner === moi);
+  const communs = E.objectifs.filter((o) => !o.owner && !o.retire_le).sort((a, b) => a.ordre - b.ordre);
+  const miens = E.objectifs.filter((o) => o.owner === moi && !o.retire_le);
   const aPriere = communs.some((o) => o.type === "priere") || miens.some((o) => o.type === "priere");
   const t = local(), h = aPriere ? horairesJour(t.jourNum) : null;
   let encours = null;
   if (h) { const now = t.minutes; PRIERES.forEach((p) => { const f = fenetrePriere(p, t.jourNum); const fin = p === "isha" ? f.fin + 1440 : f.fin; if (now >= f.debut && now < fin) encours = p; }); if (!encours && t.minutes < h[0]) encours = "isha"; }
   const avant = etatLobby() === "avant", manque = E.lobby.nb_perso - miens.length;
+  const aVoter = E.propositions.filter(attendMonVote).length, aAppliquer = E.propositions.filter(pretAAppliquer).length;
+  const aTrancher = estAdmin() ? E.preuves.filter((p) => p.contestee) : [];
+  const bandeau = (href, titre, sous) => `<a href="${href}" class="carte enjeu ligne entre" style="text-decoration:none;color:inherit"><div><b>${titre}</b><div class="doux petit">${sous}</div></div><span>›</span></a>`;
 
   app.innerHTML = `
   <main class="page pile-l">
     ${enteteLobby(texteJour())}
     ${avant && manque > 0 ? `<a href="#/lobby/${E.lobby.id}/reglages" class="carte enjeu ligne entre" style="text-decoration:none;color:inherit"><div><b>Choisis tes objectifs perso</b><div class="doux petit">${miens.length} sur ${E.lobby.nb_perso} · avant le ${dateCourte(E.lobby.date_debut)}</div></div><span>›</span></a>` : ""}
+    ${aTrancher.length ? bandeau(`#/lobby/${E.lobby.id}/fil/preuve/${aTrancher[0].id}`, `⚖️ ${aTrancher.length} preuve${aTrancher.length > 1 ? "s" : ""} contestée${aTrancher.length > 1 ? "s" : ""}`, "Tu es l'admin : à toi de trancher") : ""}
+    ${aVoter ? bandeau(`#/lobby/${E.lobby.id}/reglages`, `🗳️ ${aVoter} proposition${aVoter > 1 ? "s" : ""} à voter`, "Dans Réglages") : aAppliquer ? bandeau(`#/lobby/${E.lobby.id}/reglages`, `✅ ${aAppliquer} proposition${aAppliquer > 1 ? "s" : ""} validée${aAppliquer > 1 ? "s" : ""}`, "Tout le monde est d'accord : il reste à appliquer") : ""}
     ${autres.length ? `<div class="defile">${dernieres.map(({ m, p }) => {
       const o = p && E.objectifs.find((x) => x.id === p.objectif_id);
       return p && E.urls[p.photo_path] ? `<a class="post" href="#/lobby/${E.lobby.id}/fil/preuve/${p.id}" style="text-decoration:none;color:inherit">
@@ -493,6 +536,7 @@ const majuscule = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const compteDansLobby = (p) => p.jour >= E.lobby.date_debut && p.jour <= E.lobby.date_fin;
 function statutDe(p) {
   if (p.refusee) return ["refus", "refusée"];
+  if (p.contestee) return ["conteste", "contestée"];
   if (p.jour < E.lobby.date_debut) return ["neutre", "essai"];
   return p.statut === "a_temps" ? ["ok", "à temps"] : ["retard", "en retard"];
 }
@@ -507,7 +551,7 @@ function bornesFil() {
 // Pour un membre et un jour : une case par objectif (photo ou vide), dans l'ordre des objectifs
 function bilanJour(uid, jour) {
   const pr = E.preuves.filter((p) => p.user_id === uid && p.jour === jour);
-  const cases = objectifsDe(uid).map((o) => ({ o, p: pr.find((p) => p.objectif_id === o.id) }));
+  const cases = objectifsDe(uid, jour).map((o) => ({ o, p: pr.find((p) => p.objectif_id === o.id) }));
   const ok = cases.filter((c) => c.p && !c.p.refusee);
   return { cases, faits: ok.length, points: ok.reduce((s, c) => s + (compteDansLobby(c.p) ? c.p.points : 0), 0) };
 }
@@ -657,10 +701,12 @@ function ouvrirVisio(id, tuile) {
       <div class="ligne">
         <span class="badge ${c}">${t}${!p.refusee && compteDansLobby(p) ? ` · +${pts(p.points)}` : ""}</span>
         <span style="flex:1"></span>
-        ${!moi && !p.refusee ? `<button class="btn petit danger" data-a="refuser" data-id="${p.id}">Refuser</button>` : ""}
-        ${p.refusee && p.refusee_par === E.moi.id ? `<button class="btn petit second" data-a="accepter" data-id="${p.id}">Annuler le refus</button>` : ""}
+        ${!moi && !p.refusee && !p.contestee ? `<button class="btn petit danger" data-a="contester" data-id="${p.id}">${estAdmin() ? "Refuser" : "Contester"}</button>` : ""}
+        ${p.contestee && estAdmin() ? `<button class="btn petit second" data-a="trancher" data-r="0" data-id="${p.id}">Valider</button><button class="btn petit danger" data-a="trancher" data-r="1" data-id="${p.id}">Refuser</button>` : ""}
+        ${p.refusee && estAdmin() ? `<button class="btn petit second" data-a="trancher" data-r="0" data-id="${p.id}">Annuler le refus</button>` : ""}
       </div>
-      ${p.refusee ? `<p class="visio-motif">Refusée par ${esc(quiEst(p.refusee_par))}${p.motif ? ` : « ${esc(p.motif)} »` : ""}</p>` : ""}`;
+      ${p.refusee ? `<p class="visio-motif">Refusée par ${esc(quiEst(p.refusee_par))}${p.motif ? ` : « ${esc(p.motif)} »` : ""}</p>` : ""}
+      ${p.contestee ? `<p class="visio-motif">Contestée par ${esc(quiEst(p.contestee_par))}${p.motif ? ` : « ${esc(p.motif)} »` : ""} · ${estAdmin() ? "à toi de trancher" : `${esc(quiEst(E.lobby.admin))} (admin) va trancher`}</p>` : ""}`;
   };
   const aller = (n) => { n = Math.max(0, Math.min(ids.length - 1, n)); piste.scrollTo({ left: n * larg(), behavior: sansAnim() ? "auto" : "smooth" }); };
   piste.addEventListener("scroll", () => { const n = Math.round(piste.scrollLeft / larg()); if (n !== i && n >= 0 && n < ids.length) { i = n; maj(); } }, { passive: true });
@@ -762,14 +808,14 @@ async function vueClassement() {
     ${jours.length ? `<section class="pile"><h3>7 derniers jours</h3><div class="carte" style="overflow-x:auto"><table class="tableau">
       <thead><tr><th>Jour</th>${E.membres.map((m) => `<th>${m.user_id === E.moi.id ? "Toi" : esc(m.profils?.prenom)}</th>`).join("")}</tr></thead>
       <tbody>${jours.map((j) => `<tr><td>${dateCourte(j)}</td>${E.membres.map((m) => `<td>${sc[m.user_id].parJour[j] || 0}</td>`).join("")}</tr>`).join("")}</tbody></table></div></section>` : ""}
-    <section class="pile"><h3>Barème</h3><div class="carte petit">${E.objectifs.filter((o) => !o.owner).map((o) => `<div class="ligne entre" style="padding:4px 0"><span>${esc(o.emoji)} ${esc(o.titre)}</span><span class="doux chiffre">${o.pts_temps} / ${o.pts_retard} / 0</span></div>`).join("")}
+    <section class="pile"><h3>Barème</h3><div class="carte petit">${E.objectifs.filter((o) => !o.owner && !o.retire_le).map((o) => `<div class="ligne entre" style="padding:4px 0"><span>${esc(o.emoji)} ${esc(o.titre)}</span><span class="doux chiffre">${o.pts_temps} / ${o.pts_retard} / 0</span></div>`).join("")}
       ${E.lobby.nb_perso ? `<div class="sep"></div><div class="ligne entre" style="padding:4px 0"><span>🎯 Objectifs perso (×${E.lobby.nb_perso})</span><span class="doux chiffre">${E.lobby.perso_pts_temps} / ${E.lobby.perso_pts_retard} / 0</span></div>` : ""}
       <p class="doux" style="margin:8px 0 0">à temps / en retard / pas fait</p></div></section>
   </main>${onglets()}`;
 }
 
 async function vueReglages() {
-  const miens = E.objectifs.filter((o) => o.owner === E.moi.id), avant = etatLobby() === "avant";
+  const miens = E.objectifs.filter((o) => o.owner === E.moi.id && !o.retire_le), avant = etatLobby() === "avant";
   const lien = `${location.origin}${location.pathname}#/rejoindre/${E.lobby.code}`;
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent), installe = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
   const pushOk = "PushManager" in window && "serviceWorker" in navigator;
@@ -777,6 +823,30 @@ async function vueReglages() {
   let abonne = false;
   try { const reg = await navigator.serviceWorker?.getRegistration(); abonne = !!(await reg?.pushManager?.getSubscription()); } catch {}
   const triche = E.triche ? await sectionTriche().catch(() => "") : "";
+  const clePerso = "perso-" + E.lobby.id, cleChg = "chg-" + E.lobby.id;
+  const directOk = (o) => E.edition?.cle !== clePerso && avant && miens.length < E.lobby.nb_perso && o.pts_temps === E.lobby.perso_pts_temps && (o.type === "journee" || o.pts_retard === E.lobby.perso_pts_retard);
+  E.edOpts[clePerso] = {
+    perso: true, lobbyId: E.lobby.id, pts: E.lobby.perso_pts_temps,
+    bouton: (o) => (E.edition?.cle === clePerso ? "Mettre à jour la proposition" : directOk(o) ? "Ajouter" : "Proposer au vote du lobby"),
+    action: async (d) => {
+      const o = d.objectif;
+      if (E.edition?.cle === clePerso) { await modifierProposition(E.edition.id, d.description, o); toast("Proposition mise à jour, on revote 🗳️"); }
+      else if (directOk(o)) {
+        const { error } = await sb.rpc("ajouter_objectif_perso", { p_lobby: E.lobby.id, p_titre: o.titre.trim(), p_emoji: o.emoji, p_type: o.type, p_priere: o.priere || "", p_heure_debut: o.heure_debut || "", p_heure_fin: o.heure_fin || "" });
+        if (error) throw error;
+        await rechargerObjectifs(); toast("Objectif ajouté");
+      } else { await proposer("objectif_perso", d.description, o); toast("Proposé au vote du lobby 🗳️"); }
+      viderEd(clePerso); rendre();
+    },
+  };
+  E.edOpts[cleChg] = {
+    mode: "changement", lobbyId: E.lobby.id,
+    action: async (d) => {
+      if (E.edition?.cle === cleChg) { await modifierProposition(E.edition.id, d.demande, d.resultat); toast("Proposition mise à jour, on revote 🗳️"); }
+      else { await proposer("changement", d.demande, d.resultat); toast("Proposé au vote 🗳️"); }
+      viderEd(cleChg); rendre();
+    },
+  };
 
   app.innerHTML = `
   <main class="page pile-l">
@@ -786,19 +856,22 @@ async function vueReglages() {
       <button class="btn" data-a="partager" data-lien="${esc(lien)}">Envoyer le lien d'invitation</button>
     </section>` : ""}
 
-    <section class="pile"><h3>Membres</h3><div class="carte">${E.membres.map((m) => `<div class="ligne" style="padding:6px 0"><div class="av" style="width:32px;height:32px;border-radius:50%;background:var(--vert-clair);color:var(--vert);display:grid;place-items:center;font-weight:700">${esc(initiale(m.profils?.prenom))}</div><b>${esc(m.profils?.prenom)}</b>${m.user_id === E.lobby.createur ? '<span class="chip">créateur</span>' : ""}</div>`).join("")}</div></section>
+    <section class="pile"><h3>Membres</h3><div class="carte">${E.membres.map((m) => `<div class="ligne" style="padding:6px 0"><div class="av" style="width:32px;height:32px;border-radius:50%;background:var(--vert-clair);color:var(--vert);display:grid;place-items:center;font-weight:700">${esc(initiale(m.profils?.prenom))}</div><b>${esc(m.profils?.prenom)}</b>${m.user_id === E.lobby.admin ? '<span class="chip">admin</span>' : ""}${m.user_id === E.lobby.createur ? '<span class="chip">créateur</span>' : ""}<span style="flex:1"></span>${m.user_id !== E.lobby.admin && E.membres.length > 1 && !E.propositions.some((x) => x.type === "admin" && x.contenu?.user_id === m.user_id) ? `<button class="lien petit" data-a="propose-admin" data-id="${m.user_id}">Proposer admin</button>` : ""}</div>`).join("")}
+      <p class="doux petit" style="margin:6px 0 0">L'admin tranche les preuves contestées. Changer d'admin passe par un vote de tout le lobby.</p></div></section>
 
-    ${E.lobby.nb_perso ? `<section class="pile"><h3>Mes objectifs perso · ${miens.length}/${E.lobby.nb_perso}</h3>
-      <div class="carte" style="padding-block:4px">${miens.map((o) => `<div class="objectif"><div class="emoji">${esc(o.emoji)}</div><div class="txt"><b>${esc(o.titre)}</b><small>${esc(sousTitre(o))}</small></div>${avant ? `<button class="btn petit second" data-a="suppr-perso" data-id="${o.id}">Retirer</button>` : ""}</div>`).join("") || '<p class="doux petit">Aucun pour l\'instant.</p>'}</div>
-      ${avant && miens.length < E.lobby.nb_perso ? `<form id="perso" class="carte pile">
-        <div class="ligne"><input name="emoji" value="🎯" style="width:56px;text-align:center;flex:none" aria-label="Emoji"><input name="titre" required placeholder="ex. 30 min de lecture"></div>
-        <label class="champ"><span>Quand</span><select name="type"><option value="journee">N'importe quand dans la journée</option><option value="horaire">Avant une heure précise</option></select></label>
-        <label class="champ" id="heure-perso" hidden><span>À faire avant</span><input type="time" name="heure_fin" value="12:00"></label>
-        <p class="doux petit" style="margin:0">Points imposés par le lobby : ${E.lobby.perso_pts_temps} à temps, ${E.lobby.perso_pts_retard} en retard.</p>
-        <button class="btn second" type="submit">Ajouter</button>
-      </form>` : ""}
-      ${!avant ? '<p class="doux petit" style="margin:0">Le lobby a commencé : les objectifs sont figés.</p>' : ""}
-    </section>` : ""}
+    ${E.propositions.length ? `<section class="pile" id="votes"><h3>Propositions en cours</h3>${E.propositions.map(carteProposition).join("")}</section>` : ""}
+
+    <section class="pile"><h3>Mes objectifs perso${E.lobby.nb_perso ? ` · ${miens.length}/${E.lobby.nb_perso}` : ""}</h3>
+      <div class="carte" style="padding-block:4px">${miens.map((o) => `<div class="objectif"><div class="emoji">${esc(o.emoji)}</div><div class="txt"><b>${esc(o.titre)}</b><small>${esc(sousTitre(o))} · ${ptsDe(o)}</small></div>${avant ? `<button class="btn petit second" data-a="suppr-perso" data-id="${o.id}">Retirer</button>` : ""}</div>`).join("") || '<p class="doux petit">Aucun pour l\'instant.</p>'}</div>
+      <div class="carte pile" id="ed-perso">
+        <p class="doux petit" style="margin:0">${avant && miens.length < E.lobby.nb_perso ? `Avec les points par défaut (${E.lobby.perso_pts_temps} à temps, ${E.lobby.perso_pts_retard} en retard), il s'ajoute tout de suite. Avec une autre pondération, le lobby vote.` : "Le lobby vote sur ton objectif et sa pondération avant qu'il compte."}</p>
+        ${editeurHTML(clePerso)}
+      </div>
+    </section>
+
+    <section class="pile" id="ed-chg"><h3>Proposer un changement au lobby</h3>
+      <div class="carte pile"><p class="doux petit" style="margin:0">Objectifs communs, horaires, points, enjeu, date de fin… Claude prépare le changement, tout le monde vote, puis on l'applique.</p>${editeurHTML(cleChg)}</div>
+    </section>
 
     ${triche}
 
@@ -818,6 +891,12 @@ async function vueReglages() {
       </div>
     </section>
 
+    <section class="pile"><h3>Mon compte Claude</h3><div class="carte pile">
+      ${E.cleClaude ? `<p style="margin:0">✅ Connecté. Claude crée tes activités et prépare tes propositions, sur ton compte Anthropic.</p><button class="btn second" data-a="oublier-cle">Déconnecter mon compte Claude</button>`
+        : `<p class="doux petit" style="margin:0">Pour créer une activité juste en la décrivant. Sur <b>console.anthropic.com</b> → <b>API Keys</b> → <b>Create Key</b>, copie la clé et colle-la ici. C'est payé à l'usage sur ton compte (moins d'un centime par demande), à part de l'abonnement Claude Pro/Max, qu'Anthropic ne permet pas de brancher dans une autre appli.</p>
+        <div class="ligne"><input id="cle-claude" type="password" placeholder="sk-ant-…" autocomplete="off" autocapitalize="none" spellcheck="false"><button class="btn petit" data-a="connecter-cle">Connecter</button></div>`}
+    </div></section>
+
     <section class="pile"><h3>Notifications</h3><div class="carte pile">
       ${ios && !installe ? `<p style="margin:0"><b>Installe d'abord l'appli :</b> dans Safari, bouton <b>Partager</b> ⬆️ puis <b>Sur l'écran d'accueil</b>. Ouvre Rafiq depuis l'icône, puis reviens ici.</p>`
         : !pushOk ? `<p class="doux" style="margin:0">Ce navigateur ne gère pas les notifications.</p>`
@@ -829,7 +908,8 @@ async function vueReglages() {
     <section class="pile"><h3>Règles du lobby</h3><div class="carte petit pile">
       <div>Du <b>${dateCourte(E.lobby.date_debut)}</b> au <b>${dateCourte(E.lobby.date_fin)}</b> · ${E.lobby.max_membres} personnes max</div>
       <div>La journée se termine à ${E.lobby.fin_journee.slice(0, 5)} (une photo à 1h du matin compte pour la veille).</div>
-      <div>Chaque preuve est une photo prise dans l'appli, l'heure vient du serveur. Un membre peut refuser une preuve douteuse : elle passe à 0.</div>
+      <div>Chaque preuve est une photo prise dans l'appli, l'heure vient du serveur. Un membre peut contester une preuve douteuse : l'admin (${esc(quiEst(E.lobby.admin))}) tranche, et si elle est refusée elle passe à 0.</div>
+      <div>Tout changement du lobby (objectifs, points, admin…) doit être accepté par tous les autres membres avant d'être appliqué.</div>
     </div></section>
 
     <section class="pile">
@@ -846,19 +926,6 @@ async function vueReglages() {
     if (error) return toast(traduire(error));
     toast("Objectifs liés 🤫"); rendre();
   });
-  const fp = app.querySelector("#perso");
-  if (fp) {
-    fp.type.onchange = () => { app.querySelector("#heure-perso").hidden = fp.type.value !== "horaire"; };
-    fp.onsubmit = async (ev) => {
-      ev.preventDefault(); const f = new FormData(fp);
-      const { error } = await sb.rpc("ajouter_objectif_perso", {
-        p_lobby: E.lobby.id, p_titre: String(f.get("titre")).trim(), p_emoji: String(f.get("emoji")), p_type: String(f.get("type")),
-        p_priere: "", p_heure_debut: "", p_heure_fin: f.get("type") === "horaire" ? String(f.get("heure_fin")) : "",
-      });
-      if (error) return toast(traduire(error));
-      await rechargerObjectifs(); toast("Objectif ajouté"); rendre();
-    };
-  }
   app.querySelector("#mosq").onsubmit = async (ev) => {
     ev.preventDefault(); const lienM = new FormData(ev.target).get("lien"); const btn = ev.target.querySelector(".btn");
     btn.disabled = true; btn.textContent = "Recherche…";
@@ -879,12 +946,169 @@ async function vueReglages() {
     } catch (e) { toast(traduire(e)); }
   };
 }
+// ---------- Éditeur d'activité : on décrit, Claude crée, on fait des remarques, Claude refait ----------
+// État gardé dans E.ed[cle] pour survivre aux rendus ; options (mode, bouton, action) dans E.edOpts[cle].
+const OBJ_VIDE = (pt = 2) => ({ titre: "", emoji: "🎯", type: "journee", priere: null, heure_debut: null, heure_fin: null, pts_temps: pt, pts_retard: 0 });
+const etatEd = (cle) => (E.ed[cle] ||= { description: "", objectif: null, explication: "", remarques: "", demande: "", resultat: null, parClaude: false });
+const ptsDe = (o) => (o.type === "journee" ? pts(o.pts_temps) : `${o.pts_temps} / ${o.pts_retard} pts`);
+const texteObj = (o) => `${o.emoji} ${o.titre} · ${sousTitre(o)} · ${ptsDe(o)}`;
+const titreDe = (id) => { const o = E.objectifs.find((x) => x.id === id); return o ? `${o.emoji} ${o.titre}` : "objectif"; };
+function texteOps(c) {
+  const L = { nom: "nom", enjeu: "enjeu", date_fin: "fin", nb_perso: "objectifs perso par personne", perso_pts_temps: "points perso à temps", perso_pts_retard: "points perso en retard", fin_journee: "fin de journée" };
+  return (c?.operations || []).map((op) => {
+    if (op.op === "ajouter") return `➕ Ajouter : ${texteObj(op.objectif)}`;
+    if (op.op === "modifier") return `✏️ ${titreDe(op.id)} → ${texteObj(op.objectif)}`;
+    if (op.op === "retirer") return `🗑️ Retirer : ${titreDe(op.id)} (les points déjà gagnés restent)`;
+    if (op.op === "lobby") return `⚙️ ${Object.entries(op.champs).map(([k, v]) => `${L[k] || k} → ${k === "date_fin" ? dateCourte(v) : v}`).join(", ")}`;
+    return "";
+  }).filter(Boolean);
+}
+function champsObjHTML(o) {
+  const t = (k) => esc(o[k]?.slice?.(0, 5) || "");
+  return `<div class="pile">
+    <div class="ligne"><input data-o="emoji" value="${esc(o.emoji)}" style="width:56px;text-align:center;flex:none" aria-label="Emoji"><input data-o="titre" value="${esc(o.titre)}" placeholder="Nom de l'activité" aria-label="Nom"></div>
+    <div class="grille-2">
+      <label class="champ"><span>Quand</span><select data-o="type">
+        <option value="journee" ${o.type === "journee" ? "selected" : ""}>Dans la journée</option>
+        <option value="horaire" ${o.type === "horaire" ? "selected" : ""}>Avec horaire</option>
+        <option value="priere" ${o.type === "priere" ? "selected" : ""}>Une prière</option></select></label>
+      ${o.type === "priere" ? `<label class="champ"><span>Prière</span><select data-o="priere">${PRIERES.map((p) => `<option value="${p}" ${o.priere === p ? "selected" : ""}>${NOMS[p]}</option>`).join("")}</select></label>` : ""}
+    </div>
+    ${o.type === "horaire" ? `<div class="grille-2"><label class="champ"><span>Pas avant</span><input type="time" data-o="heure_debut" value="${t("heure_debut")}"></label><label class="champ"><span>À faire avant</span><input type="time" data-o="heure_fin" value="${t("heure_fin")}"></label></div>` : ""}
+    <div class="grille-2">
+      <label class="champ"><span>Points à temps</span><input type="number" min="0" max="20" data-o="pts_temps" value="${o.pts_temps}"></label>
+      ${o.type === "journee" ? "" : `<label class="champ"><span>Points en retard</span><input type="number" min="0" max="20" data-o="pts_retard" value="${o.pts_retard}"></label>`}
+    </div></div>`;
+}
+function editeurHTML(cle) {
+  const d = etatEd(cle), op = E.edOpts[cle] || {}, occ = d.enCours ? "disabled" : "";
+  const sansCle = `<p class="doux petit" style="margin:0">${op.mode === "changement" ? "Connecte ton compte Claude (Réglages, « Mon compte Claude ») pour proposer un changement en l'écrivant simplement." : "Connecte ton compte Claude (Réglages) pour créer une activité juste en la décrivant. En attendant, remplis les champs :"}</p>`;
+  if (op.mode === "changement") {
+    if (!E.cleClaude) return `<div class="pile" data-ed="${cle}">${sansCle}</div>`;
+    const r = d.resultat;
+    return `<div class="pile" data-ed="${cle}">
+      <label class="champ"><span>Qu'est-ce que tu veux changer ?</span><textarea rows="2" data-e="demande" placeholder="ex. passer le réveil à 6h30 et ajouter 10 min de Coran par jour">${esc(d.demande)}</textarea></label>
+      ${r ? `<div class="carte plate pile"><b>${esc(r.resume)}</b>${texteOps(r).map((t) => `<div class="petit">${esc(t)}</div>`).join("")}</div>
+        <label class="champ"><span>Pas tout à fait ça ? Réexplique à Claude</span><textarea rows="2" data-e="remarques" placeholder="ex. non, garde 3 points pour le réveil">${esc(d.remarques)}</textarea></label>
+        <div class="grille-2"><button type="button" class="btn second" data-e="claude" ${occ}>${d.enCours ? "Claude réfléchit…" : "✨ Refaire"}</button><button type="button" class="btn" data-e="go" ${occ}>${E.edition?.cle === cle ? "Mettre à jour" : "Proposer au vote"}</button></div>`
+      : `<button type="button" class="btn second" data-e="claude" ${occ}>${d.enCours ? "Claude réfléchit…" : "✨ Préparer avec Claude"}</button>`}
+      ${E.edition?.cle === cle ? `<button type="button" class="lien" data-e="stop">Annuler la modification</button>` : ""}
+      <p class="erreur">${esc(d.erreur || "")}</p></div>`;
+  }
+  if (!E.cleClaude && !d.objectif) d.objectif = OBJ_VIDE(op.pts);
+  const o = d.objectif;
+  return `<div class="pile" data-ed="${cle}">
+    ${E.cleClaude ? `<label class="champ"><span>Décris ton activité</span><textarea rows="2" data-e="description" placeholder="ex. lire 20 pages avant de dormir">${esc(d.description)}</textarea></label>
+      ${!d.parClaude ? `<button type="button" class="btn second" data-e="claude" ${occ}>${d.enCours ? "Claude réfléchit…" : "✨ Créer avec Claude"}</button>` : ""}` : sansCle}
+    ${o && d.parClaude ? `<div class="carte plate pile">
+        <div class="objectif" style="border:0;padding:0"><div class="emoji">${esc(o.emoji)}</div><div class="txt"><b>${esc(o.titre)}</b><small>${esc(sousTitre(o))} · ${ptsDe(o)}</small></div></div>
+        ${d.explication ? `<p class="doux petit" style="margin:0">${esc(d.explication)}</p>` : ""}
+        <details><summary class="lien petit">Modifier à la main</summary>${champsObjHTML(o)}</details></div>
+      <label class="champ"><span>Une remarque ? Réexplique à Claude</span><textarea rows="2" data-e="remarques" placeholder="ex. plutôt avant 23h, et 3 points">${esc(d.remarques)}</textarea></label>
+      <button type="button" class="btn second" data-e="claude" ${occ}>${d.enCours ? "Claude réfléchit…" : "✨ Refaire avec Claude"}</button>` : o ? champsObjHTML(o) : ""}
+    ${o && op.bouton ? `<button type="button" class="btn" data-e="go" ${occ}>${esc(op.bouton(o))}</button>` : ""}
+    ${E.edition?.cle === cle ? `<button type="button" class="lien" data-e="stop">Annuler la modification</button>` : ""}
+    <p class="erreur">${esc(d.erreur || "")}</p></div>`;
+}
+const majEd = (cle) => { const b = document.querySelector(`[data-ed="${cle}"]`); if (b) b.outerHTML = editeurHTML(cle); };
+const viderEd = (cle) => { delete E.ed[cle]; if (E.edition?.cle === cle) E.edition = null; };
+
+async function demanderClaude(cle) {
+  const d = etatEd(cle), op = E.edOpts[cle] || {};
+  const refaire = op.mode === "changement" ? !!d.resultat : d.parClaude;
+  const corps = op.mode === "changement"
+    ? { action: "changement", lobby_id: op.lobbyId, demande: d.demande, brouillon: refaire ? d.resultat : null, remarques: d.remarques }
+    : { action: "activite", lobby_id: op.lobbyId || null, perso: !!op.perso, description: d.description, brouillon: refaire ? d.objectif : null, remarques: d.remarques };
+  if (op.mode === "changement" ? !d.demande.trim() : !d.description.trim()) { d.erreur = op.mode === "changement" ? "Écris ce que tu veux changer." : "Décris ton activité."; return majEd(cle); }
+  d.enCours = true; d.erreur = ""; majEd(cle);
+  const r = await appelFonction("claude", JSON.stringify(corps), true);
+  d.enCours = false;
+  if (r.erreur) { d.erreur = r.erreur; if (r.sans_cle) { E.cleClaude = false; } return majEd(cle); }
+  if (op.mode === "changement") d.resultat = { resume: r.resume, operations: r.operations };
+  else { d.objectif = r.objectif; d.explication = r.explication; d.parClaude = true; }
+  d.remarques = "";
+  majEd(cle);
+}
+document.addEventListener("input", (ev) => {
+  const box = ev.target.closest("[data-ed]"); if (!box) return;
+  const d = etatEd(box.dataset.ed), t = ev.target;
+  if (t.dataset.e) d[t.dataset.e] = t.value;
+  if (t.dataset.o && d.objectif) d.objectif[t.dataset.o] = t.type === "number" ? +t.value : t.value || null;
+});
+document.addEventListener("change", (ev) => {
+  const box = ev.target.closest("[data-ed]"); if (!box || !ev.target.dataset.o) return;
+  const d = etatEd(box.dataset.ed), o = d.objectif; if (!o) return;
+  if (o.type === "priere" && !o.priere) o.priere = "fajr";
+  if (o.type !== "horaire") { o.heure_debut = null; o.heure_fin = null; }
+  if (o.type === "horaire" && !o.heure_debut && !o.heure_fin) o.heure_fin = "12:00";
+  if (o.type === "journee") o.pts_retard = 0;
+  const ouvert = box.querySelector("details")?.open;
+  majEd(box.dataset.ed);
+  if (ouvert) document.querySelector(`[data-ed="${box.dataset.ed}"] details`)?.setAttribute("open", "");
+});
+document.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && ev.target.matches("[data-ed] input")) ev.preventDefault(); });
+document.addEventListener("click", async (ev) => {
+  const b = ev.target.closest("[data-ed] [data-e]"); if (!b || b.tagName === "TEXTAREA") return;
+  const cle = b.closest("[data-ed]").dataset.ed, d = etatEd(cle), op = E.edOpts[cle] || {};
+  if (b.dataset.e === "claude") return demanderClaude(cle);
+  if (b.dataset.e === "stop") { viderEd(cle); return rendre(); }
+  if (b.dataset.e === "go" && op.action) {
+    const o = d.objectif;
+    if (o && !String(o.titre || "").trim()) { d.erreur = "Donne un nom à l'activité."; return majEd(cle); }
+    if (o?.type === "horaire" && !o.heure_debut && !o.heure_fin) { d.erreur = "Mets au moins une heure."; return majEd(cle); }
+    b.disabled = true;
+    try { await op.action(d); } catch (e) { d.erreur = traduire(e); b.disabled = false; majEd(cle); }
+  }
+});
+
+// ---------- Propositions soumises au vote ----------
+const votantsDe = (pr) => E.membres.filter((m) => m.user_id !== pr.auteur);
+const voteDe = (pr, uid) => E.votes.find((v) => v.proposition_id === pr.id && v.user_id === uid);
+const pretAAppliquer = (pr) => votantsDe(pr).every((m) => voteDe(pr, m.user_id)?.accord === true);
+const attendMonVote = (pr) => pr.auteur !== E.moi.id && !voteDe(pr, E.moi.id);
+async function proposer(type, texte, contenu) {
+  const { data, error } = await sb.rpc("proposer", { p_lobby: E.lobby.id, p_type: type, p_texte: texte || "", p_contenu: contenu });
+  if (error) throw error;
+  const fd = new FormData(); fd.append("action", "proposition"); fd.append("proposition_id", data); appelFonction("preuve", fd, false);
+  await chargerPropositions(E.lobby.id);
+  return data;
+}
+async function modifierProposition(id, texte, contenu) {
+  const { error } = await sb.rpc("modifier_proposition", { p_id: id, p_texte: texte || "", p_contenu: contenu });
+  if (error) throw error;
+  const fd = new FormData(); fd.append("action", "proposition"); fd.append("proposition_id", id); appelFonction("preuve", fd, false);
+  E.edition = null; await chargerPropositions(E.lobby.id);
+}
+function carteProposition(pr) {
+  const auteur = quiEst(pr.auteur), c = pr.contenu || {};
+  let titre, corps = "";
+  if (pr.type === "admin") { titre = `${auteur === "Toi" ? "Tu proposes" : esc(auteur) + " propose"} ${esc(quiEst(c.user_id))} comme admin`; corps = `<p class="doux petit" style="margin:0">L'admin tranche les preuves contestées.</p>`; }
+  else if (pr.type === "objectif_perso") {
+    titre = `${auteur === "Toi" ? "Tu proposes" : esc(auteur) + " propose"} un objectif perso`;
+    corps = `<div class="objectif" style="border:0;padding:0"><div class="emoji">${esc(c.emoji)}</div><div class="txt"><b>${esc(c.titre)}</b><small>${esc(sousTitre(c))}</small></div></div>
+      <p class="doux petit" style="margin:0">Pondération proposée : <b>${ptsDe(c)}</b> (par défaut ${E.lobby.perso_pts_temps} / ${E.lobby.perso_pts_retard})</p>`;
+  } else {
+    titre = `${auteur === "Toi" ? "Ta proposition" : esc(auteur) + " propose"}`;
+    corps = `${pr.texte ? `<p class="doux petit" style="margin:0">« ${esc(pr.texte)} »</p>` : ""}<b>${esc(c.resume || "")}</b>${texteOps(c).map((t) => `<div class="petit">${esc(t)}</div>`).join("")}`;
+  }
+  const votes = votantsDe(pr).map((m) => { const v = voteDe(pr, m.user_id); return `<span class="chip ${v ? (v.accord ? "v-oui" : "v-non") : ""}">${v ? (v.accord ? "✓" : "✗") : "…"} ${esc(quiEst(m.user_id))}</span>`; }).join(" ");
+  const monVote = voteDe(pr, E.moi.id), pret = pretAAppliquer(pr), moiAuteur = pr.auteur === E.moi.id;
+  return `<div class="carte pile" id="prop-${pr.id}">
+    <div class="ligne entre"><b>${titre}</b><span class="chip">${pr.type === "admin" ? "admin" : pr.type === "objectif_perso" ? "objectif perso" : "changement"}</span></div>
+    ${corps}
+    <div class="choix">${votes}</div>
+    ${!moiAuteur ? `<div class="grille-2"><button class="btn petit ${monVote?.accord === true ? "" : "second"}" data-a="voter" data-v="1" data-id="${pr.id}">D'accord</button><button class="btn petit ${monVote?.accord === false ? "danger" : "second"}" data-a="voter" data-v="0" data-id="${pr.id}">Pas d'accord</button></div>` : ""}
+    <button class="btn" data-a="appliquer" data-id="${pr.id}" ${pret ? "" : "disabled"}>${pret ? "Appliquer" : "Appliquer · en attente des votes"}</button>
+    ${moiAuteur ? `<div class="ligne">${pr.type !== "admin" ? `<button class="lien" data-a="modif-prop" data-id="${pr.id}">Modifier</button>` : ""}<span style="flex:1"></span><button class="lien" data-a="annuler-prop" data-id="${pr.id}" style="color:var(--rouge)">Retirer la proposition</button></div>` : ""}
+  </div>`;
+}
+
 // ---------- Mode triche (visible uniquement par les comptes autorisés) ----------
 async function sectionTriche() {
   await chargerLobbies();
   const autresL = E.lobbies.filter((l) => l.id !== E.lobby.id && l.date_fin >= versDate(local().jourNum));
   const [{ data: objs }, { data: liens }] = await Promise.all([
-    autresL.length ? sb.from("objectifs").select("id, titre, emoji, lobby_id, owner, ordre").in("lobby_id", autresL.map((l) => l.id)) : { data: [] },
+    autresL.length ? sb.from("objectifs").select("id, titre, emoji, lobby_id, owner, ordre").in("lobby_id", autresL.map((l) => l.id)).is("retire_le", null) : { data: [] },
     sb.from("liens_triche").select("objectif_id, groupe"),
   ]);
   const ailleurs = (objs || []).filter((o) => !o.owner || o.owner === E.moi.id).sort((a, b) => (!!a.owner - !!b.owner) || a.ordre - b.ordre);
@@ -1067,15 +1291,64 @@ document.addEventListener("click", async (ev) => {
   if (a === "deco") { await sb.auth.signOut(); try { localStorage.removeItem("rafiq-lobby"); } catch {} allerA("#/"); }
   if (a === "accueil") { ev.preventDefault(); try { sessionStorage.setItem("rafiq-accueil", "1"); } catch {} allerA("#/"); }
   if (a === "preuve") { const o = E.objectifs.find((x) => x.id === id); if (o) ouvrirCamera(o); }
-  if (a === "refuser") {
-    const motif = prompt("Pourquoi refuser cette preuve ? (facultatif)");
+  if (a === "contester") {
+    const admin = estAdmin();
+    const motif = prompt(admin ? "Pourquoi refuser cette preuve ? (facultatif)" : "Pourquoi tu contestes cette preuve ? L'admin du lobby tranchera. (facultatif)");
     if (motif === null) return;
-    const { error } = await sb.rpc("refuser_preuve", { p_preuve: id, p_motif: motif });
+    const { error } = await sb.rpc("contester_preuve", { p_preuve: id, p_motif: motif });
     if (error) return toast(traduire(error));
-    toast("Preuve refusée : 0 point"); rafraichir();
+    if (!admin) { const fd = new FormData(); fd.append("action", "contestation"); fd.append("preuve_id", id); appelFonction("preuve", fd, false); }
+    toast(admin ? "Preuve refusée : 0 point" : "Contestation envoyée à l'admin ⚖️"); rafraichir();
   }
-  if (a === "accepter") { const { error } = await sb.rpc("accepter_preuve", { p_preuve: id }); if (error) return toast(traduire(error)); rafraichir(); }
+  if (a === "trancher") {
+    const { error } = await sb.rpc("trancher_preuve", { p_preuve: id, p_refuser: el.dataset.r === "1" });
+    if (error) return toast(traduire(error));
+    toast(el.dataset.r === "1" ? "Preuve refusée : 0 point" : "Preuve validée ✓"); rafraichir();
+  }
   if (a === "delier") { const { error } = await sb.rpc("delier_objectif", { p_objectif: id }); if (error) return toast(traduire(error)); toast("Lien retiré"); rendre(); }
+  if (a === "voter") {
+    const { error } = await sb.rpc("voter", { p_id: id, p_accord: el.dataset.v === "1" });
+    if (error) return toast(traduire(error));
+    await chargerPropositions(E.lobby.id); rendre();
+  }
+  if (a === "appliquer") {
+    el.disabled = true;
+    const { error } = await sb.rpc("appliquer_proposition", { p_id: id });
+    if (error) { el.disabled = false; return toast(traduire(error)); }
+    toast("Changement appliqué ✅"); await rechargerVotes(); rendre();
+  }
+  if (a === "annuler-prop") {
+    if (!confirm("Retirer cette proposition ?")) return;
+    const { error } = await sb.rpc("annuler_proposition", { p_id: id });
+    if (error) return toast(traduire(error));
+    if (E.edition?.id === id) viderEd(E.edition.cle);
+    await chargerPropositions(E.lobby.id); rendre();
+  }
+  if (a === "modif-prop") {
+    const pr = E.propositions.find((x) => x.id === id); if (!pr) return;
+    const cle = (pr.type === "objectif_perso" ? "perso-" : "chg-") + E.lobby.id;
+    E.ed[cle] = pr.type === "objectif_perso"
+      ? { description: pr.texte || "", objectif: { ...pr.contenu }, explication: "", remarques: "", parClaude: E.cleClaude, demande: "", resultat: null }
+      : { demande: pr.texte || "", resultat: pr.contenu, remarques: "", description: "", objectif: null, parClaude: false };
+    E.edition = { cle, id };
+    await rendre();
+    document.getElementById(pr.type === "objectif_perso" ? "ed-perso" : "ed-chg")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  if (a === "propose-admin") {
+    if (!confirm(`Proposer ${prenomDe(id)} comme admin du lobby ? Tout le monde doit être d'accord.`)) return;
+    try { await proposer("admin", "", { user_id: id }); toast("Proposé au vote 🗳️"); rendre(); } catch (e) { toast(traduire(e)); }
+  }
+  if (a === "connecter-cle") {
+    const cle = app.querySelector("#cle-claude")?.value.trim(); if (!cle) return;
+    el.disabled = true; el.textContent = "Vérification…";
+    const r = await appelFonction("claude", JSON.stringify({ action: "cle", cle }), true);
+    if (r.erreur) { el.disabled = false; el.textContent = "Connecter"; return toast(r.erreur); }
+    E.cleClaude = true; toast("Compte Claude connecté ✨"); rendre();
+  }
+  if (a === "oublier-cle") {
+    if (!confirm("Déconnecter ton compte Claude de Rafiq ?")) return;
+    await sb.rpc("oublier_cle_claude"); E.cleClaude = false; toast("Compte Claude déconnecté"); rendre();
+  }
   if (a === "suppr-perso") { const { error } = await sb.rpc("supprimer_objectif_perso", { p_objectif: id }); if (error) return toast(traduire(error)); await rechargerObjectifs(); rendre(); }
   if (a === "partager") {
     const lien = el.dataset.lien, texte = `Rejoins mon lobby « ${E.lobby.nom} » sur Rafiq (code ${E.lobby.code})`;
