@@ -153,7 +153,7 @@ async function chargerLobby(id) {
   if (!l.data) throw new Error("Lobby introuvable.");
   E.lobby = l.data; E.membres = (m.data || []).sort((a, b) => a.joined_at.localeCompare(b.joined_at));
   E.objectifs = o.data || []; E.preuves = p.data || [];
-  E.lobbyCharge = id;
+  E.lobbyCharge = id; E.jourFil = null;
   try { localStorage.setItem("rafiq-lobby", id); } catch {}
   ecouter(id);
 }
@@ -179,7 +179,7 @@ async function rafraichir() {
   try {
     const { data } = await sb.from("preuves").select("*").eq("lobby_id", E.lobbyCharge).order("pris_le", { ascending: false }).limit(1000);
     E.preuves = data || [];
-    if (location.hash.startsWith("#/lobby/") && !document.querySelector(".camera") && !document.activeElement?.matches("input,select,textarea")) await rendre();
+    if (location.hash.startsWith("#/lobby/") && !document.querySelector(".camera") && !document.activeElement?.matches("input,select,textarea")) { await rendre(); E.visio?.maj(); }
   } finally { rafraichEnCours = false; }
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) rafraichir(); });
@@ -194,6 +194,7 @@ function allerA(h, remplacer = false) {
 window.addEventListener("hashchange", () => rendre());
 window.addEventListener("popstate", () => rendre());
 async function rendre() {
+  if (!/\/fil/.test(location.hash)) E.visio?.fermer(true);
   const h = location.hash.replace(/^#\/?/, "").split("/");
   if (!E.session) return ecranConnexion();
   if (!E.moi) await chargerMoi();
@@ -204,7 +205,9 @@ async function rendre() {
     try {
       if (E.lobbyCharge !== h[1]) { app.innerHTML = '<div class="chargement">Chargement…</div>'; await chargerLobby(h[1]); }
     } catch (e) { toast(traduire(e)); allerA("#/"); return; }
-    E.onglet = ["jour", "fil", "classement", "reglages"].includes(h[2]) ? h[2] : "jour";
+    const ong = ["jour", "fil", "classement", "reglages"].includes(h[2]) ? h[2] : "jour";
+    if (ong === "fil" && E.onglet !== "fil") E.jourFil = null;
+    E.onglet = ong;
     const focus = h[3] === "preuve" ? h[4] : null;
     if (focus) E.onglet = "fil";
     return ecranLobby(focus);
@@ -479,25 +482,252 @@ async function vueJour() {
   </main>${onglets()}`;
 }
 
+// ---------- Preuves : galerie par jour ----------
+const jourCourant = () => { const t = local(); return Math.floor((t.jourNum * 1440 + t.minutes - enMin(E.lobby?.fin_journee || "04:00")) / 1440); };
+const TEINTES = ["vert", "or", "bleu", "prune"];
+const teinte = (uid) => TEINTES[Math.max(0, E.membres.findIndex((m) => m.user_id === uid)) % TEINTES.length];
+const quiEst = (uid) => (uid === E.moi.id ? "Toi" : prenomDe(uid));
+const majuscule = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const compteDansLobby = (p) => p.jour >= E.lobby.date_debut && p.jour <= E.lobby.date_fin;
+function statutDe(p) {
+  if (p.refusee) return ["refus", "refusée"];
+  if (p.jour < E.lobby.date_debut) return ["neutre", "essai"];
+  return p.statut === "a_temps" ? ["ok", "à temps"] : ["retard", "en retard"];
+}
+function bornesFil() {
+  const auj = jourCourant();
+  let debut = depuisDate(E.lobby.date_debut), fin = Math.min(auj, depuisDate(E.lobby.date_fin));
+  for (const p of E.preuves) { const j = depuisDate(p.jour); if (j < debut) debut = j; if (j > fin) fin = j; }
+  if (fin < debut) debut = fin = auj;
+  if (E.jourFil) { const j = depuisDate(E.jourFil); debut = Math.min(debut, j); fin = Math.max(fin, j); }
+  return { debut, fin, auj };
+}
+// Pour un membre et un jour : une case par objectif (photo ou vide), dans l'ordre des objectifs
+function bilanJour(uid, jour) {
+  const pr = E.preuves.filter((p) => p.user_id === uid && p.jour === jour);
+  const cases = objectifsDe(uid).map((o) => ({ o, p: pr.find((p) => p.objectif_id === o.id) }));
+  const ok = cases.filter((c) => c.p && !c.p.refusee);
+  return { cases, faits: ok.length, points: ok.reduce((s, c) => s + (compteDansLobby(c.p) ? c.p.points : 0), 0) };
+}
+function friseHTML() {
+  const { debut, fin, auj } = bornesFil();
+  const faits = {};
+  for (const p of E.preuves) if (!p.refusee) faits[p.jour] = (faits[p.jour] || 0) + 1;
+  const total = E.membres.reduce((s, m) => s + objectifsDe(m.user_id).length, 0) || 1;
+  let h = "";
+  for (let j = debut; j <= fin; j++) {
+    const d = versDate(j), dt = new Date(j * 864e5);
+    const js = j === auj ? "auj." : dt.toLocaleDateString("fr-FR", { weekday: "short", timeZone: "UTC" }).replace(".", "");
+    const pct = Math.min(100, Math.round(((faits[d] || 0) / total) * 100));
+    h += `<button class="jour-f ${d === E.jourFil ? "on" : ""}" data-j="${d}" style="--p:${pct}" title="${esc(dateLongue(j))}" aria-pressed="${d === E.jourFil}">
+      <span class="js">${js}</span><span class="anneau"><b>${dt.getUTCDate()}</b></span></button>`;
+  }
+  return h;
+}
+function centrerFrise(doux) {
+  const f = app.querySelector("#frise"), b = f?.querySelector(".on"); if (!b) return;
+  f.scrollTo({ left: b.offsetLeft - f.clientWidth / 2 + b.offsetWidth / 2, behavior: doux ? "smooth" : "auto" });
+}
+function choisirJour(d) {
+  const { debut, fin } = bornesFil(), j = depuisDate(d);
+  if (j < debut || j > fin || d === E.jourFil) return;
+  E.jourFil = d;
+  app.querySelectorAll(".jour-f").forEach((b) => { const on = b.dataset.j === d; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
+  centrerFrise(true);
+  const g = app.querySelector("#galerie"), z = app.querySelector(".frise-zone");
+  if (g && z && g.getBoundingClientRect().top < z.offsetHeight) window.scrollTo({ top: window.scrollY + g.getBoundingClientRect().top - z.offsetHeight - 8, behavior: "smooth" });
+  rendreGalerie();
+}
+
 async function vueFil(focus) {
-  const liste = E.preuves.slice(0, 60);
-  await urlsPhotos(liste.map((p) => p.photo_path));
+  const cible = focus && E.preuves.find((p) => p.id === focus);
+  if (cible) E.jourFil = cible.jour;
+  if (!E.jourFil) E.jourFil = versDate(jourCourant());
   app.innerHTML = `
-  <main class="page pile-l">
-    ${enteteLobby("Toutes les preuves")}
-    <div class="pile">${liste.map((p) => {
-      const o = E.objectifs.find((x) => x.id === p.objectif_id), moi = p.user_id === E.moi.id;
-      return `<article class="post ${p.refusee ? "refusee" : ""} ${p.id === focus ? "surligne" : ""}" id="p-${p.id}">
-        <div class="tete"><div class="av">${esc(initiale(prenomDe(p.user_id)))}</div><div style="flex:1"><b>${esc(prenomDe(p.user_id))}</b><div class="doux petit">${esc(o?.emoji)} ${esc(o?.titre)} · ${dateCourte(p.jour)} ${heureDe(p.pris_le)}</div></div>
-        ${p.refusee ? '<span class="badge refus">refusée</span>' : p.jour < E.lobby.date_debut ? '<span class="badge neutre">essai</span>' : `<span class="badge ${p.statut === "a_temps" ? "ok" : "retard"}">${p.statut === "a_temps" ? "à temps" : "en retard"} +${p.points}</span>`}</div>
-        <img loading="lazy" src="${E.urls[p.photo_path] || ""}" alt="Preuve : ${esc(o?.titre)}">
-        <div class="pied"><span class="doux petit">${p.refusee ? "Refusée par " + esc(prenomDe(p.refusee_par)) + (p.motif ? " : « " + esc(p.motif) + " »" : "") : ""}</span>
-        ${!moi && !p.refusee ? `<button class="btn petit danger" data-a="refuser" data-id="${p.id}">Refuser</button>` : ""}
-        ${p.refusee && p.refusee_par === E.moi.id ? `<button class="btn petit second" data-a="accepter" data-id="${p.id}">Annuler le refus</button>` : ""}</div>
-      </article>`;
-    }).join("") || '<div class="carte plate centre doux">Aucune preuve pour l\'instant.</div>'}</div>
+  <main class="page fil">
+    ${enteteLobby("Les preuves, jour par jour")}
+    <div class="frise-zone"><div class="frise" id="frise" aria-label="Choisir le jour">${friseHTML()}</div></div>
+    <div id="galerie"></div>
   </main>${onglets()}`;
-  if (focus) document.getElementById("p-" + focus)?.scrollIntoView({ block: "center" });
+  centrerFrise(false);
+  app.querySelector("#frise").addEventListener("click", (ev) => { const b = ev.target.closest("[data-j]"); if (b) choisirJour(b.dataset.j); });
+  app.querySelector("#galerie").addEventListener("click", (ev) => {
+    const t = ev.target.closest("[data-v]"); if (t) return ouvrirVisio(t.dataset.v, t);
+    const n = ev.target.closest("[data-nav]"); if (n) choisirJour(versDate(depuisDate(E.jourFil) + +n.dataset.nav));
+  });
+  await rendreGalerie();
+  if (cible && !E.visio) {
+    history.replaceState(null, "", `#/lobby/${E.lobby.id}/fil`);
+    ouvrirVisio(cible.id, app.querySelector(`[data-v="${cible.id}"]`));
+  }
+}
+
+async function rendreGalerie() {
+  const g = app.querySelector("#galerie"); if (!g) return;
+  const jour = E.jourFil, jn = depuisDate(jour), { debut, fin, auj } = bornesFil();
+  const essai = jour < E.lobby.date_debut;
+  const ordre = [...E.membres.filter((m) => m.user_id !== E.moi.id), ...E.membres.filter((m) => m.user_id === E.moi.id)];
+  const murs = ordre.map((m) => ({ m, ...bilanJour(m.user_id, jour) }));
+  const photos = murs.flatMap((w) => w.cases.filter((c) => c.p).map((c) => c.p));
+  await urlsPhotos(photos.map((p) => p.photo_path));
+  if (E.jourFil !== jour || !g.isConnected) return;
+  const anim = E.jourAnime !== jour; E.jourAnime = jour;
+  E.listeVisio = photos.map((p) => p.id);
+  const titre = jn === auj ? "Aujourd'hui" : jn === auj - 1 ? "Hier" : majuscule(new Date(jn * 864e5).toLocaleDateString("fr-FR", { weekday: "long", timeZone: "UTC" }));
+  const sous = new Date(jn * 864e5).toLocaleDateString("fr-FR", { day: "numeric", month: "long", timeZone: "UTC" });
+  g.innerHTML = `
+    <div class="jour-titre">
+      <button class="btn rond second" data-nav="-1" ${jn <= debut ? "disabled" : ""} aria-label="Jour précédent">‹</button>
+      <div><h2>${titre}</h2><div class="doux petit">${sous}${essai ? " · essai, avant le début" : ""}</div></div>
+      <button class="btn rond second" data-nav="1" ${jn >= fin ? "disabled" : ""} aria-label="Jour suivant">›</button>
+    </div>
+    ${murs.map((w) => murHTML(w, jn, auj, essai, anim)).join("")}`;
+}
+
+function murHTML(w, jn, auj, essai, anim) {
+  const uid = w.m.user_id, tot = w.cases.length, pct = tot ? Math.round((w.faits / tot) * 100) : 0;
+  const a = anim ? "apparait" : "";
+  return `<section class="mur t-${teinte(uid)}">
+    <header class="mur-tete">
+      <div class="av">${esc(initiale(prenomDe(uid)))}</div>
+      <div class="txt"><b>${esc(quiEst(uid))}</b><small>${w.faits} sur ${tot}${essai ? " · essai" : ` · +${pts(w.points)}`}</small></div>
+      <div class="anneau-m ${a}" style="--p:${pct}" aria-label="${pct} % fait"><span>${pct}%</span></div>
+    </header>
+    ${tot ? `<div class="grille-p">${w.cases.map(({ o, p }, i) => {
+      if (p) {
+        const [c, t] = statutDe(p), h = heureDe(p.pris_le);
+        return `<button class="tuile ${a} ${p.refusee ? "refusee" : ""}" style="--i:${i}" data-v="${p.id}" aria-label="${esc(o.titre)}, ${t}, ${h}">
+          <img src="${E.urls[p.photo_path] || ""}" alt="" loading="lazy" onload="this.classList.add('ok')" onerror="this.classList.add('ok')">
+          <span class="tag-e">${esc(o.emoji)}</span>
+          <span class="tag-h">${h}</span>
+          ${p.refusee ? "" : `<span class="tag-s ${c}">${c === "ok" ? "✓ " : ""}${t}</span>`}
+          ${p.refusee ? '<span class="tampon">refusée</span>' : ""}
+        </button>`;
+      }
+      const etat = jn < auj ? (essai ? "" : "raté") : "à faire";
+      return `<div class="tuile vide ${a} ${etat === "raté" ? "rate" : ""}" style="--i:${i}">
+        <span class="e">${esc(o.emoji)}</span><small>${esc(o.titre)}</small>${etat ? `<em>${etat}</em>` : ""}</div>`;
+    }).join("")}</div>` : '<p class="doux petit">Pas d\'objectif.</p>'}
+  </section>`;
+}
+
+// ---------- Visionneuse plein écran (glisser pour défiler, vers le bas pour fermer) ----------
+const sansAnim = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+function ouvrirVisio(id, tuile) {
+  E.visio?.fermer(true);
+  const ids = (E.listeVisio || []).slice(); let i = ids.indexOf(id);
+  if (i < 0) return;
+  const trouve = (pid) => E.preuves.find((p) => p.id === pid);
+  const ui = document.createElement("div");
+  ui.className = "visio"; ui.setAttribute("role", "dialog"); ui.setAttribute("aria-modal", "true"); ui.setAttribute("aria-label", "Photos du jour");
+  ui.innerHTML = `
+    <div class="visio-fond"></div><div class="visio-ambiance"></div>
+    <div class="visio-piste">${ids.map((pid) => { const p = trouve(pid); return `<figure class="visio-diapo"><img src="${E.urls[p?.photo_path] || ""}" alt="" draggable="false"></figure>`; }).join("")}</div>
+    <div class="visio-haut">
+      <div class="visio-barres">${ids.map(() => "<i></i>").join("")}</div>
+      <div class="ligne"><div class="av"></div><div class="txt"><b></b><small></small></div><span class="visio-compte chiffre"></span><button class="cercle" data-x="fermer" aria-label="Fermer">${ICONES.fermer}</button></div>
+    </div>
+    <button class="visio-nav prec" data-x="prec" aria-label="Photo précédente">‹</button>
+    <button class="visio-nav suiv" data-x="suiv" aria-label="Photo suivante">›</button>
+    <div class="visio-bas"></div>`;
+  document.body.appendChild(ui);
+  document.documentElement.classList.add("fige");
+  const piste = ui.querySelector(".visio-piste"), imgs = [...ui.querySelectorAll(".visio-diapo img")];
+  const fond = ui.querySelector(".visio-fond"), amb = ui.querySelector(".visio-ambiance");
+  const larg = () => piste.clientWidth || 1;
+  piste.scrollLeft = i * larg();
+
+  const maj = () => {
+    const p = trouve(ids[i]); if (!p) return;
+    const o = E.objectifs.find((x) => x.id === p.objectif_id), [c, t] = statutDe(p), moi = p.user_id === E.moi.id;
+    const av = ui.querySelector(".visio-haut .av");
+    av.className = `av t-${teinte(p.user_id)}`; av.textContent = initiale(prenomDe(p.user_id));
+    ui.querySelector(".visio-haut b").textContent = quiEst(p.user_id);
+    ui.querySelector(".visio-haut small").textContent = `${o?.emoji || ""} ${o?.titre || ""}`;
+    ui.querySelector(".visio-compte").textContent = `${i + 1}/${ids.length}`;
+    ui.querySelectorAll(".visio-barres i").forEach((b, k) => { b.className = k === i ? "on" : k < i ? "vu" : ""; });
+    amb.style.backgroundImage = E.urls[p.photo_path] ? `url("${E.urls[p.photo_path]}")` : "";
+    ui.querySelector(".visio-nav.prec").disabled = i === 0;
+    ui.querySelector(".visio-nav.suiv").disabled = i === ids.length - 1;
+    ui.querySelector(".visio-bas").innerHTML = `
+      <div class="visio-heure">${heureDe(p.pris_le)}</div>
+      <div class="doux-b">${esc(majuscule(dateLongue(depuisDate(p.jour))))}</div>
+      <div class="ligne">
+        <span class="badge ${c}">${t}${!p.refusee && compteDansLobby(p) ? ` · +${pts(p.points)}` : ""}</span>
+        <span style="flex:1"></span>
+        ${!moi && !p.refusee ? `<button class="btn petit danger" data-a="refuser" data-id="${p.id}">Refuser</button>` : ""}
+        ${p.refusee && p.refusee_par === E.moi.id ? `<button class="btn petit second" data-a="accepter" data-id="${p.id}">Annuler le refus</button>` : ""}
+      </div>
+      ${p.refusee ? `<p class="visio-motif">Refusée par ${esc(quiEst(p.refusee_par))}${p.motif ? ` : « ${esc(p.motif)} »` : ""}</p>` : ""}`;
+  };
+  const aller = (n) => { n = Math.max(0, Math.min(ids.length - 1, n)); piste.scrollTo({ left: n * larg(), behavior: sansAnim() ? "auto" : "smooth" }); };
+  piste.addEventListener("scroll", () => { const n = Math.round(piste.scrollLeft / larg()); if (n !== i && n >= 0 && n < ids.length) { i = n; maj(); } }, { passive: true });
+
+  // Animation « la vignette grandit » (FLIP)
+  const versTuile = (img, t) => {
+    const cur = img.style.transform; img.style.transform = "";
+    const r = img.getBoundingClientRect(), a = t.getBoundingClientRect(); img.style.transform = cur;
+    const s = a.width / r.width;
+    return { transform: `translate(${a.left + a.width / 2 - (r.left + r.width / 2)}px, ${a.top + a.height / 2 - (r.top + r.height / 2)}px) scale(${s})`, borderRadius: `${14 / s}px` };
+  };
+  if (tuile && !sansAnim()) imgs[i].animate([versTuile(imgs[i], tuile), { transform: "none", borderRadius: "18px" }], { duration: 380, easing: "cubic-bezier(.2,.85,.25,1)" });
+
+  const clavier = (ev) => {
+    if (ev.key === "Escape") fermer();
+    if (ev.key === "ArrowRight") aller(i + 1);
+    if (ev.key === "ArrowLeft") aller(i - 1);
+  };
+  document.addEventListener("keydown", clavier);
+
+  const fermer = (instant) => {
+    if (E.visio !== api) return;
+    E.visio = null;
+    document.removeEventListener("keydown", clavier);
+    document.documentElement.classList.remove("fige");
+    if (instant === true || sansAnim()) return ui.remove();
+    ui.classList.add("sort");
+    const t = document.querySelector(`.tuile[data-v="${ids[i]}"]`), img = imgs[i];
+    if (t) {
+      t.scrollIntoView({ block: "nearest" });
+      img.animate([{ transform: img.style.transform || "none", borderRadius: "18px" }, versTuile(img, t)], { duration: 300, easing: "cubic-bezier(.3,.7,.2,1)", fill: "forwards" })
+        .finished.then(() => ui.remove(), () => ui.remove());
+    } else ui.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 220 }).finished.then(() => ui.remove(), () => ui.remove());
+  };
+
+  // Glisser vers le bas pour fermer
+  let y0 = null, x0 = 0, dy = 0, vertical = null;
+  piste.addEventListener("touchstart", (e) => { if (e.touches.length !== 1) { y0 = null; return; } y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; dy = 0; vertical = null; }, { passive: true });
+  piste.addEventListener("touchmove", (e) => {
+    if (y0 === null) return;
+    const ddy = e.touches[0].clientY - y0, ddx = e.touches[0].clientX - x0;
+    if (vertical === null && Math.hypot(ddx, ddy) > 8) vertical = Math.abs(ddy) > Math.abs(ddx);
+    if (!vertical) return;
+    dy = Math.max(0, ddy);
+    imgs[i].style.transform = `translateY(${dy}px) scale(${1 - Math.min(dy, 400) / 1400})`;
+    const o = String(Math.max(0, 1 - dy / 380));
+    fond.style.opacity = o; amb.style.opacity = o; ui.style.setProperty("--chrome", o);
+  }, { passive: true });
+  piste.addEventListener("touchend", () => {
+    if (vertical && dy > 110) fermer();
+    else if (vertical) {
+      const img = imgs[i]; img.style.transition = "transform .25s"; img.style.transform = "";
+      fond.style.opacity = amb.style.opacity = ""; ui.style.removeProperty("--chrome");
+      setTimeout(() => { img.style.transition = ""; }, 260);
+    }
+    y0 = null; vertical = null;
+  });
+
+  ui.addEventListener("click", (ev) => {
+    const x = ev.target.closest("[data-x]")?.dataset.x;
+    if (x === "fermer") fermer();
+    if (x === "prec") aller(i - 1);
+    if (x === "suiv") aller(i + 1);
+  });
+
+  const api = { fermer, maj };
+  E.visio = api;
+  maj();
+  ui.querySelector("[data-x=fermer]").focus({ preventScroll: true });
 }
 
 async function vueClassement() {
