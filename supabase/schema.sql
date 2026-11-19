@@ -423,6 +423,14 @@ create table if not exists public.cles_claude (
   maj timestamptz not null default now()
 );
 alter table public.cles_claude enable row level security;
+alter table public.cles_claude add column if not exists endpoint text;   -- null = API Anthropic
+alter table public.cles_claude add column if not exists modele text;
+alter table public.cles_claude add column if not exists bearer boolean not null default false; -- clé envoyée en « Authorization: Bearer »
+-- Ce que l'appli peut savoir de sa connexion (jamais la clé)
+create or replace function public.infos_claude() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('endpoint', endpoint, 'modele', modele) from cles_claude where user_id = auth.uid();
+$$;
 create or replace function public.a_cle_claude() returns boolean
 language sql stable security definer set search_path = public as $$ select exists (select 1 from cles_claude where user_id = auth.uid()); $$;
 create or replace function public.oublier_cle_claude() returns void

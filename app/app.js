@@ -141,8 +141,8 @@ async function chargerMoi() {
   E.moi = data;
   const { data: tr } = await sb.from("triche").select("user_id").eq("user_id", E.session.user.id).maybeSingle();
   E.triche = !!tr;
-  const { data: cle } = await sb.rpc("a_cle_claude");
-  E.cleClaude = !!cle;
+  const { data: ic } = await sb.rpc("infos_claude");
+  E.infosClaude = ic || null; E.cleClaude = !!ic;
   E.calendrier = null;
   if (data?.mosquee_url) {
     const { data: h } = await sb.from("horaires_mosquee").select("calendrier").eq("url", data.mosquee_url).maybeSingle();
@@ -892,9 +892,14 @@ async function vueReglages() {
     </section>
 
     <section class="pile"><h3>Mon compte Claude</h3><div class="carte pile">
-      ${E.cleClaude ? `<p style="margin:0">✅ Connecté. Claude crée tes activités et prépare tes propositions, sur ton compte Anthropic.</p><button class="btn second" data-a="oublier-cle">Déconnecter mon compte Claude</button>`
-        : `<p class="doux petit" style="margin:0">Pour créer une activité juste en la décrivant. Sur <b>console.anthropic.com</b> → <b>API Keys</b> → <b>Create Key</b>, copie la clé et colle-la ici. C'est payé à l'usage sur ton compte (moins d'un centime par demande), à part de l'abonnement Claude Pro/Max, qu'Anthropic ne permet pas de brancher dans une autre appli.</p>
-        <div class="ligne"><input id="cle-claude" type="password" placeholder="sk-ant-…" autocomplete="off" autocapitalize="none" spellcheck="false"><button class="btn petit" data-a="connecter-cle">Connecter</button></div>`}
+      ${E.cleClaude ? `<p style="margin:0">✅ Connecté · <b>${esc(E.infosClaude?.modele || "claude-sonnet-5-5")}</b></p>
+        <p class="doux petit" style="margin:0">${E.infosClaude?.endpoint ? `Via ${esc(E.infosClaude.endpoint)}` : "Via l'API Anthropic"}. Claude crée tes activités et prépare tes propositions.</p>
+        <button class="btn second" data-a="oublier-cle">Déconnecter</button>`
+        : `<p class="doux petit" style="margin:0">Pour créer une activité juste en la décrivant. Avec l'API Anthropic : <b>console.anthropic.com</b> → <b>API Keys</b> → <b>Create Key</b>. Avec un autre service compatible Anthropic, mets aussi son adresse.</p>
+        <label class="champ"><span>Clé API</span><input id="cle-claude" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+        <label class="champ"><span>Adresse de l'API (vide = Anthropic)</span><input id="api-claude" inputmode="url" placeholder="https://api.anthropic.com" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+        <label class="champ"><span>Modèle</span><input id="modele-claude" value="claude-sonnet-5-5" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+        <button class="btn" data-a="connecter-cle">Connecter</button>`}
     </div></section>
 
     <section class="pile"><h3>Notifications</h3><div class="carte pile">
@@ -1341,13 +1346,14 @@ document.addEventListener("click", async (ev) => {
   if (a === "connecter-cle") {
     const cle = app.querySelector("#cle-claude")?.value.trim(); if (!cle) return;
     el.disabled = true; el.textContent = "Vérification…";
-    const r = await appelFonction("claude", JSON.stringify({ action: "cle", cle }), true);
+    const endpoint = app.querySelector("#api-claude")?.value.trim() || "", modele = app.querySelector("#modele-claude")?.value.trim() || "";
+    const r = await appelFonction("claude", JSON.stringify({ action: "cle", cle, endpoint, modele }), true);
     if (r.erreur) { el.disabled = false; el.textContent = "Connecter"; return toast(r.erreur); }
-    E.cleClaude = true; toast("Compte Claude connecté ✨"); rendre();
+    E.cleClaude = true; E.infosClaude = { endpoint: r.endpoint, modele: r.modele }; toast("Compte Claude connecté ✨"); rendre();
   }
   if (a === "oublier-cle") {
     if (!confirm("Déconnecter ton compte Claude de Rafiq ?")) return;
-    await sb.rpc("oublier_cle_claude"); E.cleClaude = false; toast("Compte Claude déconnecté"); rendre();
+    await sb.rpc("oublier_cle_claude"); E.cleClaude = false; E.infosClaude = null; toast("Compte Claude déconnecté"); rendre();
   }
   if (a === "suppr-perso") { const { error } = await sb.rpc("supprimer_objectif_perso", { p_objectif: id }); if (error) return toast(traduire(error)); await rechargerObjectifs(); rendre(); }
   if (a === "partager") {

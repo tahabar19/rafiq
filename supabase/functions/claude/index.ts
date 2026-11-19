@@ -1,5 +1,6 @@
 // Rafiq — Claude prépare les activités et les changements de lobby, avec la clé API de la personne qui demande.
-// Actions : "cle" (connecter sa clé), "activite" (description → objectif), "changement" (demande → opérations).
+// Actions : "cle" (connecter sa clé + adresse d'API + modèle), "activite" (description → objectif), "changement" (demande → opérations).
+// L'adresse peut être l'API Anthropic (par défaut) ou toute API compatible avec le format Messages d'Anthropic.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@1.8.0";
 
@@ -11,7 +12,30 @@ const cors = {
 const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { ...cors, "Content-Type": "application/json" } });
 
-const MODELE = "claude-opus-5-5";
+const MODELE = "claude-sonnet-5-5"; // modèle par défaut, chacun peut en choisir un autre
+
+// Adresse d'API fournie par la personne : https uniquement, jamais vers le réseau interne
+function adresseApi(brut: unknown): string | null {
+  const t = String(brut || "").trim();
+  if (!t) return null;
+  let u: URL;
+  try { u = new URL(/^https?:\/\//i.test(t) ? t : "https://" + t); } catch { throw new Error("Adresse d'API invalide."); }
+  if (u.protocol !== "https:") throw new Error("L'adresse d'API doit commencer par https://");
+  const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".local") || h.endsWith(".internal") || h.endsWith(".localhost") || h === "metadata.google.internal" ||
+      /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h) || /^(::1?|f[cd][0-9a-f]{2}:|fe80:)/.test(h) || /^\d+$/.test(h))
+    throw new Error("Cette adresse d'API n'est pas autorisée.");
+  // Le SDK ajoute lui-même /v1/messages : on retire ce que la personne a pu coller en trop
+  const chemin = u.pathname.replace(/\/+$/, "").replace(/\/v1(\/messages)?$/, "");
+  if (u.hostname === "api.anthropic.com" && !chemin) return null;
+  return `${u.origin}${chemin}`;
+}
+type Connexion = { cle: string; endpoint: string | null; modele: string | null; bearer: boolean };
+const client = (k: Connexion) => new Anthropic({
+  ...(k.bearer ? { apiKey: null, authToken: k.cle } : { apiKey: k.cle }),
+  ...(k.endpoint ? { baseURL: k.endpoint } : {}),
+  maxRetries: 1,
+});
 const PRIERES = ["fajr", "dhuhr", "asr", "maghrib", "isha"];
 const nul = (t: unknown) => ({ anyOf: [t, { type: "null" }] });
 
@@ -119,22 +143,29 @@ Deno.serve(async (req) => {
     // ---------- Connecter son compte : on vérifie la clé auprès d'Anthropic avant de l'enregistrer ----------
     if (corps.action === "cle") {
       const cle = String(corps.cle || "").trim();
-      if (!/^sk-ant-/.test(cle)) return json({ erreur: "Ce n'est pas une clé Claude (elle commence par sk-ant-)." }, 400);
-      try {
-        await new Anthropic({ apiKey: cle, maxRetries: 1 }).models.retrieve(MODELE);
-      } catch (e) {
-        if (e instanceof Anthropic.AuthenticationError) return json({ erreur: "Anthropic refuse cette clé." }, 400);
-        if (e instanceof Anthropic.PermissionDeniedError) return json({ erreur: "Cette clé n'a pas accès à Claude." }, 400);
-        throw e;
+      let endpoint: string | null;
+      try { endpoint = adresseApi(corps.endpoint); } catch (e) { return json({ erreur: (e as Error).message }, 400); }
+      const modele = String(corps.modele || "").trim() || MODELE;
+      if (!/^[\w.:@\/-]{1,100}$/.test(modele)) return json({ erreur: "Nom de modèle invalide." }, 400);
+      if (cle.length < 8) return json({ erreur: "Colle ta clé." }, 400);
+      if (!endpoint && !/^sk-ant-/.test(cle)) return json({ erreur: "Ce n'est pas une clé Anthropic (elle commence par sk-ant-). Pour un autre service, remplis aussi l'adresse de l'API." }, 400);
+      // Petit essai réel : vérifie la clé, l'adresse et le modèle. Clé en x-api-key, sinon en Bearer.
+      const essai = (bearer: boolean) => client({ cle, endpoint, modele, bearer }).messages.create({
+        model: modele, max_tokens: 64, messages: [{ role: "user", content: "Réponds juste : OK" }],
+      });
+      let bearer = false;
+      try { await essai(false); } catch (e) {
+        if (!(e instanceof Anthropic.AuthenticationError) || !endpoint) return json({ erreur: erreurClaude(e) }, 400);
+        try { await essai(true); bearer = true; } catch (e2) { return json({ erreur: erreurClaude(e2) }, 400); }
       }
-      const { error } = await admin.from("cles_claude").upsert({ user_id: user.id, cle, maj: new Date().toISOString() });
+      const { error } = await admin.from("cles_claude").upsert({ user_id: user.id, cle, endpoint, modele, bearer, maj: new Date().toISOString() });
       if (error) return json({ erreur: error.message }, 500);
-      return json({ ok: true });
+      return json({ ok: true, endpoint, modele });
     }
 
-    const { data: k } = await admin.from("cles_claude").select("cle").eq("user_id", user.id).maybeSingle();
+    const { data: k } = await admin.from("cles_claude").select("cle, endpoint, modele, bearer").eq("user_id", user.id).maybeSingle();
     if (!k) return json({ erreur: "Connecte d'abord ton compte Claude (Réglages).", sans_cle: true }, 400);
-    const client = new Anthropic({ apiKey: k.cle });
+    const claude = client(k as Connexion), modele = k.modele || MODELE;
 
     // Contexte du lobby (seulement celui-ci, jamais les autres lobbies de la personne)
     let lobby: any = null, objectifs: any[] = [], membres: any[] = [];
@@ -154,20 +185,31 @@ Deno.serve(async (req) => {
       `Objectifs actuels :\n${JSON.stringify(objectifs.map(decrire), null, 1)}` : "Lobby en cours de création.";
     const suite = corps.brouillon ? `\n\nTa proposition précédente :\n${JSON.stringify(corps.brouillon)}\n\nRemarques de la personne, à prendre en compte :\n${String(corps.remarques || "").slice(0, 2000)}` : "";
 
-    const demander = async (consigne: string, schema: unknown) => {
-      const r: any = await client.beta.messages.create({
-        model: MODELE,
-        max_tokens: 16000,
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
-        output_config: { effort: "low", format: { type: "json_schema", schema } },
-        system: REGLES,
-        messages: [{ role: "user", content: consigne }],
-      } as any);
+    const lireJson = (r: any) => {
       if (r.stop_reason === "refusal") throw new Error("Claude n'a pas voulu traiter cette demande.");
-      const t = r.content.find((b: any) => b.type === "text")?.text;
-      if (!t) throw new Error("Claude n'a rien répondu, réessaie.");
-      return JSON.parse(t);
+      const t = (r.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+      const m = t.match(/\{[\s\S]*\}/);
+      if (!m) throw new Error("Claude n'a pas répondu comme prévu, réessaie.");
+      return JSON.parse(m[0]);
+    };
+    const demander = async (consigne: string, schema: unknown) => {
+      const base = { model: modele, max_tokens: 16000, system: REGLES, messages: [{ role: "user", content: consigne }] };
+      if (!k.endpoint) {
+        // API Anthropic : sortie structurée garantie + repli automatique si le modèle refuse
+        return lireJson(await claude.beta.messages.create({
+          ...base, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default",
+          output_config: { effort: "low", format: { type: "json_schema", schema } },
+        } as any));
+      }
+      // Autre adresse : on tente la sortie structurée, sinon on demande le JSON dans la consigne
+      try {
+        return lireJson(await claude.messages.create({ ...base, output_config: { format: { type: "json_schema", schema } } } as any));
+      } catch (e) {
+        if (!(e instanceof Anthropic.BadRequestError)) throw e;
+        return lireJson(await claude.messages.create({
+          ...base, system: `${REGLES}\n\nRéponds uniquement avec un objet JSON valide (sans texte autour) qui respecte ce schéma JSON :\n${JSON.stringify(schema)}`,
+        } as any));
+      }
     };
 
     if (corps.action === "activite") {
@@ -213,13 +255,21 @@ Deno.serve(async (req) => {
 
     return json({ erreur: "Action inconnue." }, 400);
   } catch (e) {
-    if (e instanceof Anthropic.AuthenticationError) return json({ erreur: "Ta clé Claude ne marche plus. Reconnecte ton compte (Réglages).", sans_cle: true }, 400);
-    if (e instanceof Anthropic.RateLimitError) return json({ erreur: "Claude est saturé, réessaie dans un moment." }, 429);
-    if (e instanceof Anthropic.APIConnectionError) return json({ erreur: "Impossible de joindre Claude, réessaie." }, 502);
-    if (e instanceof Anthropic.APIError) {
-      if ((e as any).type === "billing_error" || e.status === 402) return json({ erreur: "Plus de crédit sur ton compte Claude (console.anthropic.com → Billing)." }, 402);
-      return json({ erreur: "Claude : " + e.message }, 502);
-    }
+    if (e instanceof Anthropic.AuthenticationError) return json({ erreur: "Ta clé ne marche plus. Reconnecte ton compte Claude (Réglages).", sans_cle: true }, 400);
+    if (e instanceof Anthropic.APIError) return json({ erreur: erreurClaude(e) }, 502);
     return json({ erreur: (e as Error).message }, 500);
   }
 });
+
+function erreurClaude(e: unknown): string {
+  if (e instanceof Anthropic.AuthenticationError) return "Clé refusée par le service.";
+  if (e instanceof Anthropic.PermissionDeniedError) return "Cette clé n'a pas accès à ce modèle.";
+  if (e instanceof Anthropic.NotFoundError) return "Modèle ou adresse d'API introuvable (vérifie le nom du modèle et l'adresse).";
+  if (e instanceof Anthropic.RateLimitError) return "Claude est saturé ou la limite est atteinte, réessaie dans un moment.";
+  if (e instanceof Anthropic.APIConnectionError) return "Impossible de joindre l'adresse d'API.";
+  if (e instanceof Anthropic.APIError) {
+    if ((e as any).type === "billing_error" || e.status === 402) return "Plus de crédit sur ce compte.";
+    return "Claude : " + e.message;
+  }
+  return (e as Error)?.message || String(e);
+}
