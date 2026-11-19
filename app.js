@@ -546,11 +546,11 @@ async function vueFil(focus) {
   app.innerHTML = `
   <main class="page fil">
     ${enteteLobby("Les preuves, jour par jour")}
-    <div class="frise-zone"><div class="frise" id="frise" aria-label="Choisir le jour">${friseHTML()}</div></div>
+    ${bornesFil().fin > bornesFil().debut ? `<div class="frise-zone"><div class="frise" id="frise" aria-label="Choisir le jour">${friseHTML()}</div></div>` : ""}
     <div id="galerie"></div>
   </main>${onglets()}`;
   centrerFrise(false);
-  app.querySelector("#frise").addEventListener("click", (ev) => { const b = ev.target.closest("[data-j]"); if (b) choisirJour(b.dataset.j); });
+  app.querySelector("#frise")?.addEventListener("click", (ev) => { const b = ev.target.closest("[data-j]"); if (b) choisirJour(b.dataset.j); });
   app.querySelector("#galerie").addEventListener("click", (ev) => {
     const t = ev.target.closest("[data-v]"); if (t) return ouvrirVisio(t.dataset.v, t);
     const n = ev.target.closest("[data-nav]"); if (n) choisirJour(versDate(depuisDate(E.jourFil) + +n.dataset.nav));
