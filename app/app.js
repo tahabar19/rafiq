@@ -517,7 +517,7 @@ function friseHTML() {
   let h = "";
   for (let j = debut; j <= fin; j++) {
     const d = versDate(j), dt = new Date(j * 864e5);
-    const js = j === auj ? "auj." : dt.toLocaleDateString("fr-FR", { weekday: "short", timeZone: "UTC" }).replace(".", "");
+    const js = dt.toLocaleDateString("fr-FR", { weekday: "short", timeZone: "UTC" }).replace(".", "");
     const pct = Math.min(100, Math.round(((faits[d] || 0) / total) * 100));
     h += `<button class="jour-f ${d === E.jourFil ? "on" : ""}" data-j="${d}" style="--p:${pct}" title="${esc(dateLongue(j))}" aria-pressed="${d === E.jourFil}">
       <span class="js">${js}</span><span class="anneau"><b>${dt.getUTCDate()}</b></span></button>`;
