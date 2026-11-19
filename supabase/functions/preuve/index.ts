@@ -71,6 +71,35 @@ Deno.serve(async (req) => {
       return json({ ok: true, envoyees: n });
     }
 
+    // Prévenir l'admin d'une preuve contestée
+    if (action === "contestation") {
+      const { data: pr } = await admin.from("preuves").select("*, objectifs(titre, emoji)").eq("id", String(form.get("preuve_id"))).maybeSingle();
+      if (!pr || !pr.contestee || pr.contestee_par !== user.id) return json({ ok: false });
+      const { data: lb } = await admin.from("lobbies").select("admin").eq("id", pr.lobby_id).single();
+      const { data: ps } = await admin.from("profils").select("id, prenom").in("id", [user.id, pr.user_id]);
+      const p = (id: string) => ps?.find((x: any) => x.id === id)?.prenom || "?";
+      await notifier(admin, [lb.admin], {
+        title: `⚖️ ${p(user.id)} conteste une preuve de ${p(pr.user_id)}`,
+        body: `${pr.objectifs?.emoji || ""} ${pr.objectifs?.titre || ""}${pr.motif ? ` — « ${pr.motif} »` : ""} · à toi de trancher`,
+        url: `./#/lobby/${pr.lobby_id}/fil/preuve/${pr.id}`, tag: "conteste-" + pr.id,
+      });
+      return json({ ok: true });
+    }
+
+    // Prévenir les membres d'une nouvelle proposition à voter
+    if (action === "proposition") {
+      const { data: pp } = await admin.from("propositions").select("*").eq("id", String(form.get("proposition_id"))).maybeSingle();
+      if (!pp || pp.auteur !== user.id) return json({ ok: false });
+      const { data: mb } = await admin.from("membres").select("user_id").eq("lobby_id", pp.lobby_id);
+      const { data: moi } = await admin.from("profils").select("prenom").eq("id", user.id).single();
+      const quoi = pp.type === "admin" ? "un changement d'admin" : pp.type === "objectif_perso" ? `un objectif perso : ${pp.contenu?.emoji || ""} ${pp.contenu?.titre || ""}` : (pp.contenu?.resume || pp.texte || "un changement");
+      await notifier(admin, (mb || []).map((m: any) => m.user_id).filter((x: string) => x !== user.id), {
+        title: `🗳️ ${moi?.prenom || "?"} propose un changement`, body: String(quoi).slice(0, 140) + " · vote dans Réglages",
+        url: `./#/lobby/${pp.lobby_id}/reglages`, tag: "prop-" + pp.id,
+      });
+      return json({ ok: true });
+    }
+
     const objectifId = String(form.get("objectif_id") || "");
     const photo = form.get("photo");
     const prisClient = Date.parse(String(form.get("pris_client") || ""));
@@ -119,6 +148,7 @@ Deno.serve(async (req) => {
 type Ctx = { admin: any; user: any; profil: any; t: ReturnType<typeof local>; maintenant: Date; cache: Map<string, any> };
 async function valider(ctx: Ctx, obj: any, photo: File): Promise<{ preuve: any } | { erreur: string; code: number }> {
   const { admin, user, profil, t, maintenant, cache } = ctx;
+  if (obj.retire_le) return { erreur: "Cet objectif a été retiré du lobby.", code: 400 };
   const { data: mb } = await admin.from("membres").select("user_id").eq("lobby_id", obj.lobby_id);
   if (!mb?.some((m: any) => m.user_id === user.id)) return { erreur: "Tu n'es pas dans ce lobby.", code: 403 };
   const { data: lobby } = await admin.from("lobbies").select("*").eq("id", obj.lobby_id).single();

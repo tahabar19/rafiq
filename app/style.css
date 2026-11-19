@@ -359,3 +359,13 @@ html.fige, html.fige body { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Propositions, votes, preuves contestées */
+.badge.conteste { background: var(--prune-clair); color: var(--prune); }
+.tag-s.conteste { background: #C9A2DB; color: #2A1335; }
+.chip.v-oui { background: var(--vert-clair); color: var(--vert); }
+.chip.v-non { background: var(--rouge-clair); color: var(--rouge); }
+textarea { resize: vertical; min-height: 64px; }
+details > summary { cursor: pointer; list-style: none; padding: 4px 0; }
+details > summary::-webkit-details-marker { display: none; }
+details[open] > summary { margin-bottom: 8px; }
