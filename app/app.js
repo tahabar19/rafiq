@@ -988,6 +988,14 @@ async function vueReglages() {
     try { const reg = await navigator.serviceWorker?.getRegistration(); abonne = !!(await reg?.pushManager?.getSubscription()); } catch {}
     corps = `
     <section class="pile"><h3>Mon prénom</h3><div class="carte"><div class="ligne"><input id="prenom" value="${esc(E.moi.prenom)}" aria-label="Mon prénom affiché"><button class="btn petit second" data-a="prenom">OK</button></div></div></section>
+    <section class="pile"><h3>Mot de passe</h3><details class="carte ajout"><summary class="ligne entre"><span>Changer mon mot de passe</span><span class="doux">›</span></summary>
+      <form id="f-mdp" class="pile">
+        <label class="champ"><span>Mot de passe actuel</span><input name="actuel" type="password" autocomplete="current-password" required></label>
+        <label class="champ"><span>Nouveau mot de passe (6 caractères min.)</span><input name="nouveau" type="password" autocomplete="new-password" minlength="6" required></label>
+        <label class="champ"><span>Confirme le nouveau</span><input name="confirme" type="password" autocomplete="new-password" minlength="6" required></label>
+        <p class="erreur" id="err-mdp"></p>
+        <button class="btn" type="submit">Enregistrer</button>
+      </form></details></section>
     <section class="pile"><h3>Ma mosquée (horaires de prière)</h3>
       <div class="carte pile">
         <div><b>${esc(E.moi.mosquee_nom || (E.moi.lat != null ? "Calcul depuis ma position" : "Pas encore choisie"))}</b>${E.moi.mosquee_url ? `<div class="doux petit">Horaires Mawaqit</div>` : ""}</div>
@@ -1489,6 +1497,26 @@ document.addEventListener("click", async (ev) => {
     try { localStorage.removeItem("rafiq-lobby"); } catch {}
     E.lobbyCharge = null; allerA("#/");
   }
+});
+
+// Changer de mot de passe : on revérifie l'actuel avant de le remplacer
+document.addEventListener("submit", async (ev) => {
+  if (ev.target.id !== "f-mdp") return;
+  ev.preventDefault();
+  const f = ev.target, err = f.querySelector("#err-mdp"), btn = f.querySelector(".btn");
+  const actuel = f.actuel.value, nouveau = f.nouveau.value;
+  err.textContent = "";
+  if (nouveau.length < 6) { err.textContent = "Nouveau mot de passe trop court (6 caractères minimum)."; return; }
+  if (nouveau !== f.confirme.value) { err.textContent = "Les deux nouveaux mots de passe ne sont pas identiques."; return; }
+  if (nouveau === actuel) { err.textContent = "C'est le même que l'actuel."; return; }
+  btn.disabled = true; btn.textContent = "Vérification…";
+  const fin = (msg) => { btn.disabled = false; btn.textContent = "Enregistrer"; if (msg) err.textContent = msg; };
+  const { error: e1 } = await sb.auth.signInWithPassword({ email: E.session.user.email, password: actuel });
+  if (e1) return fin(/Invalid login/i.test(e1.message) ? "Mot de passe actuel incorrect." : traduire(e1));
+  const { error: e2 } = await sb.auth.updateUser({ password: nouveau });
+  if (e2) return fin(/different from the old/i.test(e2.message) ? "C'est le même que l'actuel." : traduire(e2));
+  fin(); f.reset(); f.closest("details").open = false;
+  toast("Mot de passe changé ✅");
 });
 
 // ---------- Démarrage ----------
