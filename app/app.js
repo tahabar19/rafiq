@@ -810,7 +810,7 @@ async function vueClassement() {
     <section class="carte enjeu pile">
       <h3>Enjeu</h3>
       <h2>${esc(E.lobby.enjeu || "Pas d'enjeu")}</h2>
-      <div class="doux">${s === "fini" ? "Terminé le " : "Verdict le "}${dateLongue(fin)}${s !== "fini" ? ` · J-${Math.max(0, reste)}` : ""}</div>
+      <div class="doux petit">${s === "fini" ? "Terminé le " : "Verdict le "}${dateLongue(fin)}${s !== "fini" ? ` · J-${Math.max(0, reste)}` : ""}</div>
       ${phrase ? `<b>${phrase}</b>` : ""}
     </section>
     <section class="carte pile">
@@ -934,7 +934,7 @@ async function vueReglages() {
         : !pushOk ? `<p class="doux" style="margin:0">Ce navigateur ne gère pas les notifications.</p>`
         : abonne && perm === "granted" ? `<p style="margin:0">✅ Activées sur cet appareil.</p><button class="btn second" data-a="test-push">Envoyer une notif de test</button>`
         : perm === "denied" ? `<p class="doux" style="margin:0">Notifications bloquées. Réglages de l'iPhone → Notifications → Rafiq.</p>`
-        : `<p class="doux" style="margin:0">Pour savoir quand ton binôme envoie une preuve.</p><button class="btn" data-a="activer-push">Activer les notifications</button>`}
+        : `<p class="doux" style="margin:0">Pour savoir quand quelqu'un du lobby envoie une preuve.</p><button class="btn" data-a="activer-push">Activer les notifications</button>`}
     </div></section>
     <section class="pile"><h3>Mon compte Claude</h3><div class="carte pile">
       ${E.cleClaude ? `<p style="margin:0">✅ Connecté · <b>${esc(E.infosClaude?.modele || "claude-sonnet-5-5")}</b></p>
