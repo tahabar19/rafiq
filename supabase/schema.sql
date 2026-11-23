@@ -147,12 +147,12 @@ language plpgsql security definer set search_path = public as $$
 declare lb lobbies;
 begin
   if auth.uid() is null then raise exception 'non connecté'; end if;
-  select * into lb from lobbies where code = upper(trim(p_code));
+  select * into lb from lobbies where code = upper(trim(p_code)) for update; -- verrou : pas deux arrivées en même temps
   if lb.id is null then raise exception 'code inconnu'; end if;
   if exists (select 1 from membres where lobby_id = lb.id and user_id = auth.uid()) then return lb.id; end if;
   if (select count(*) from membres where lobby_id = lb.id) >= lb.max_membres then raise exception 'lobby complet'; end if;
   if current_date > lb.date_fin then raise exception 'ce lobby est terminé'; end if;
-  insert into membres (lobby_id, user_id) values (lb.id, auth.uid());
+  insert into membres (lobby_id, user_id) values (lb.id, auth.uid()) on conflict do nothing;
   return lb.id;
 end $$;
 

@@ -44,10 +44,10 @@ function toast(msg) {
 function traduire(e) {
   const m = e?.message || String(e);
   if (/Invalid login/i.test(m)) return "Identifiant ou mot de passe faux.";
-  if (/already registered|saving new user|duplicate/i.test(m)) return "Cet identifiant est déjà pris.";
+  if (/already registered|saving new user/i.test(m)) return "Cet identifiant est déjà pris.";
   if (/Password should be/i.test(m)) return "Mot de passe trop court (6 caractères minimum).";
   if (/Failed to fetch|NetworkError|Load failed/i.test(m)) return "Pas de connexion internet.";
-  return m;
+  return m.charAt(0).toUpperCase() + m.slice(1);
 }
 const nettoyerPseudo = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9._-]/g, "");
 
@@ -230,8 +230,10 @@ async function rendre() {
   const h = location.hash.replace(/^#\/?/, "").split("/");
   if (!E.session) return ecranConnexion();
   if (!E.moi) await chargerMoi();
+  // Code d'invitation gardé pendant la connexion : on le consomme une seule fois
+  let codeGarde = null; try { codeGarde = sessionStorage.getItem("rafiq-code"); sessionStorage.removeItem("rafiq-code"); } catch {}
   if (h[0] === "rejoindre" && h[1]) return rejoindre(h[1]);
-  try { const c = sessionStorage.getItem("rafiq-code"); if (c) { sessionStorage.removeItem("rafiq-code"); return rejoindre(c); } } catch {}
+  if (codeGarde) return rejoindre(codeGarde);
   if (h[0] === "creer") return ecranCreer();
   if (h[0] === "lobby" && h[1]) {
     try {
@@ -320,7 +322,13 @@ async function ecranAccueil() {
   </main>`;
   app.querySelector("#j").onsubmit = (ev) => { ev.preventDefault(); const c = new FormData(ev.target).get("code"); if (c) rejoindre(String(c)); };
 }
-async function rejoindre(code) {
+// Un seul appel à la fois (le lien d'invitation peut déclencher deux rendus d'affilée)
+let rejoindreEnCours = null;
+function rejoindre(code) {
+  if (!rejoindreEnCours) rejoindreEnCours = rejoindreVraiment(code).finally(() => { rejoindreEnCours = null; });
+  return rejoindreEnCours;
+}
+async function rejoindreVraiment(code) {
   const { data, error } = await sb.rpc("rejoindre_lobby", { p_code: code.toUpperCase() });
   if (error) { toast(traduire(error)); try { sessionStorage.setItem("rafiq-accueil", "1"); } catch {} return allerA("#/", true); }
   toast("Bienvenue dans le lobby 🤝");
@@ -507,14 +515,18 @@ async function vueJour() {
         <img src="${E.urls[p.photo_path]}" alt="Dernière preuve de ${esc(m.profils?.prenom)}">
         <div class="pied"><b>${esc(m.profils?.prenom)}</b><span class="badge ${p.statut === "a_temps" ? "ok" : "retard"}">${esc(o?.emoji || "")} ${p.statut === "a_temps" ? "à temps" : "en retard"}</span></div></a>`
         : `<div class="partenaire"><div class="vide"><div><b>${esc(m.profils?.prenom)}</b><br>n'a pas encore envoyé de preuve</div></div></div>`;
-    }).join("")}</div>` : `<a href="#/lobby/${E.lobby.id}/reglages" class="carte plate centre" style="text-decoration:none;color:inherit;display:block"><b>Invite ton binôme</b><div class="doux petit">Code du lobby : <b>${E.lobby.code}</b></div></a>`}
+    }).join("")}</div>` : `<a href="#/lobby/${E.lobby.id}/reglages" class="carte plate centre" style="text-decoration:none;color:inherit;display:block"><b>Invite tes proches</b><div class="doux petit">Code du lobby : <b>${E.lobby.code}</b></div></a>`}
 
-    <section class="carte pile">
+    ${E.membres.length > 2 ? `<section class="carte pile">
+      <div class="podium">${[...E.membres].sort((a, b) => sc[b.user_id].total - sc[a.user_id].total).map((m, i) => `
+        <div class="ligne entre${m.user_id === moi ? " moi" : ""}"><span><span class="doux">${i + 1}.</span> <b>${m.user_id === moi ? "Toi" : esc(m.profils?.prenom)}</b></span><span><b class="chiffre">${pts(sc[m.user_id].total)}</b> <span class="doux petit">+${sc[m.user_id].aujourdhui} auj.</span></span></div>`).join("")}</div>
+      ${E.lobby.enjeu ? `<p class="doux petit centre" style="margin:0">${esc(E.lobby.enjeu)} · ${dateCourte(E.lobby.date_fin)}</p>` : ""}
+    </section>` : `<section class="carte pile">
       <div class="duel">${E.membres.slice(0, 2).map((m, i) => `
         <div class="${i ? "centre" : "centre"}"><div class="qui">${m.user_id === moi ? "Toi" : esc(m.profils?.prenom)}</div><div class="pts chiffre">${sc[m.user_id].total}</div><div class="doux petit">+${sc[m.user_id].aujourdhui} aujourd'hui</div></div>
         ${i === 0 && E.membres.length > 1 ? '<div class="vs">pts</div>' : ""}`).join("")}</div>
       ${E.lobby.enjeu ? `<p class="doux petit centre" style="margin:0">${esc(E.lobby.enjeu)} · ${dateCourte(E.lobby.date_fin)}</p>` : ""}
-    </section>
+    </section>`}
 
     ${aPriere ? (h ? `<section class="pile"><h3>Prières · ${esc(E.moi.mosquee_nom || "ta position")}</h3><div class="prieres">${PRIERES.map((p) => `<div class="${p === encours ? "maintenant" : ""}"><span>${NOMS[p]}</span><b>${hhmm(h[IDX[p]])}</b></div>`).join("")}</div></section>`
       : `<a href="#/lobby/${E.lobby.id}/reglages" class="carte enjeu" style="text-decoration:none;color:inherit;display:block"><b>Choisis ta mosquée</b><div class="doux petit">Il faut les horaires de prière pour savoir si c'est à temps.</div></a>`) : ""}
