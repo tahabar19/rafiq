@@ -257,42 +257,116 @@ function onglets() {
 }
 
 // ---------- Connexion ----------
+// Motifs du fond : icônes au trait (réussite, effort, prière…) répétées en tuile
+const MOTIFS = {
+  check: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.5"/>',
+  trophee: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/>',
+  cerveau: '<path d="M12 5.5a3 3 0 0 0-5.5-1.6A3 3 0 0 0 4 8.5a3 3 0 0 0 .5 4.8A3.2 3.2 0 0 0 7.5 18a3 3 0 0 0 4.5 1.5z"/><path d="M12 5.5a3 3 0 0 1 5.5-1.6A3 3 0 0 1 20 8.5a3 3 0 0 1-.5 4.8 3.2 3.2 0 0 1-3 4.7 3 3 0 0 1-4.5 1.5"/><path d="M8.5 9.5c1.2 0 2 .8 2 2M15.5 9.5c-1.2 0-2 .8-2 2M8 14.5c1 0 1.8-.4 2.3-1M16 14.5c-1 0-1.8-.4-2.3-1"/>',
+  etoile: '<path d="M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6-4.5-4.2 6.1-.7z"/>',
+  cible: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
+  progres: '<path d="M3 17l5-5 4 3 8-8"/><path d="M15 7h5v5"/>',
+  lune: '<path d="M19 14.5A7.5 7.5 0 1 1 9.5 5a6 6 0 0 0 9.5 9.5z"/>',
+  flamme: '<path d="M12 3c.5 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.5 1.5-3.8 2.3-5.5.9 1 1.4 2 1.6 3.3C12.4 8.5 12.3 5.6 12 3z"/>',
+  drapeau: '<path d="M5 21V4M5 4.5h11.5l-2.3 4 2.3 4H5"/>',
+  reveil: '<circle cx="12" cy="13" r="7"/><path d="M12 10v3.2l2 1.6M4.5 5.5l3-2.5M19.5 5.5l-3-2.5"/>',
+  halteres: '<path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"/>',
+  etincelle: '<path d="M12 3.5l1.6 5 5 1.6-5 1.6-1.6 5-1.6-5-5-1.6 5-1.6z"/>',
+  medaille: '<circle cx="12" cy="15" r="5"/><path d="M8.5 11.5L6 3h4l2 5 2-5h4l-2.5 8.5"/>',
+};
+const PLACES = [
+  ["check", 14, 18, 1.7, -12], ["trophee", 112, 6, 1.9, 8], ["cerveau", 214, 30, 1.8, -6], ["etincelle", 176, 104, 0.9, 0],
+  ["etoile", 62, 104, 1.3, 14], ["cible", 252, 122, 1.4, 0], ["progres", 126, 150, 1.6, -8], ["lune", 14, 186, 1.4, -18],
+  ["flamme", 206, 200, 1.5, 6], ["drapeau", 96, 232, 1.4, 10], ["reveil", 20, 262, 1.2, -8], ["medaille", 262, 252, 1.3, 12],
+  ["halteres", 160, 268, 1.2, 20],
+];
+function motifsSVG() {
+  const g = PLACES.map(([n, x, y, s, r]) => `<g transform="translate(${x} ${y}) rotate(${r} ${12 * s} ${12 * s}) scale(${s})" stroke-width="${(1.5 / s).toFixed(2)}">${MOTIFS[n]}</g>`).join("");
+  return `<svg class="motifs" aria-hidden="true"><defs><pattern id="tuile-motifs" width="310" height="310" patternUnits="userSpaceOnUse" patternTransform="rotate(-8)"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">${g}</g></pattern></defs><rect width="100%" height="100%" fill="url(#tuile-motifs)"/></svg>
+  <svg class="vagues" viewBox="0 0 400 320" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M-20 250C60 190 120 300 210 240S350 130 430 170"/><path class="v2" d="M-20 290C80 240 150 320 240 275S360 200 430 225"/><path class="v3" d="M-20 70C70 30 130 120 220 80S340 10 430 40"/>
+  </svg>`;
+}
+const ANNEAUX = '<svg class="anneaux" viewBox="0 0 64 64" aria-hidden="true"><circle class="a1" cx="24" cy="32" r="11"/><circle class="a2" cx="40" cy="32" r="11"/></svg>';
+const IC = {
+  user: '<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg>',
+  prenom: '<svg class="ic" viewBox="0 0 24 24"><path d="M12 21s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 5.6-7 10-7 10z"/></svg>',
+  cadenas: '<svg class="ic" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
+  oeil: '<svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  oeilBarre: '<svg viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 5.6A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-2.6 3.4M6.5 6.9C4 8.6 2.5 12 2.5 12S6 18.5 12 18.5c1.7 0 3.2-.5 4.5-1.3M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
+  fleche: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+};
+const TEXTES_AUTH = {
+  connexion: { titre: "Content de te revoir", sous: "Connecte-toi pour retrouver ton lobby.", bouton: "Se connecter" },
+  inscription: { titre: "Bienvenue 👋", sous: "Crée ton compte en quelques secondes.", bouton: "Créer mon compte" },
+};
 function ecranConnexion(mode = "connexion") {
   const h = location.hash.replace(/^#\/?/, "").split("/");
   if (h[0] === "rejoindre" && h[1]) { try { sessionStorage.setItem("rafiq-code", h[1]); } catch {} }
-  const inscr = mode === "inscription";
+  const invite = h[0] === "rejoindre" && h[1];
   app.innerHTML = `
-  <main class="page sans-onglets pile-l">
-    <div class="pile" style="margin-top:8vh">
-      <img src="icones/192.png" alt="" class="logo">
-      <h1>Rafiq</h1>
-      <p class="doux" style="margin:0">Tenez vos objectifs à plusieurs. Chaque objectif se prouve par une photo.</p>
-    </div>
-    <form id="f" class="carte pile" autocomplete="on">
-      <div class="choix" role="tablist">
-        <button type="button" class="${inscr ? "" : "on"}" data-mode="connexion">J'ai un compte</button>
-        <button type="button" class="${inscr ? "on" : ""}" data-mode="inscription">Créer un compte</button>
+  <main class="auth">
+    <section class="auth-hero">
+      ${motifsSVG()}
+      <div class="auth-marque">
+        ${ANNEAUX}
+        <h1>Rafiq</h1>
+        <p>Tenez vos objectifs ensemble.<br>Chaque réussite se prouve en photo.</p>
       </div>
-      <label class="champ"><span>Identifiant</span><input name="pseudo" required autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="ex. taha" autocomplete="username"></label>
-      ${inscr ? `<label class="champ"><span>Prénom affiché</span><input name="prenom" required placeholder="ex. Taha" autocomplete="given-name"></label>` : ""}
-      <label class="champ"><span>Mot de passe</span><input name="mdp" type="password" required minlength="6" autocomplete="${inscr ? "new-password" : "current-password"}"></label>
-      <p class="erreur" id="err"></p>
-      <button class="btn" type="submit">${inscr ? "Créer mon compte" : "Se connecter"}</button>
+    </section>
+    <form id="f" class="auth-feuille" autocomplete="on" novalidate>
+      ${invite ? `<div class="auth-invite">🤝 Tu es invité dans un lobby : connecte-toi ou crée ton compte pour le rejoindre.</div>` : ""}
+      <div class="bascule" data-mode="${mode}" role="tablist">
+        <button type="button" role="tab" data-mode="connexion">Se connecter</button>
+        <button type="button" role="tab" data-mode="inscription">Créer un compte</button>
+      </div>
+      <div class="auth-titre"><h2 id="a-titre"></h2><p id="a-sous"></p></div>
+      <div class="champs">
+      <label class="flottant">${IC.user}<input name="pseudo" placeholder=" " autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username"><span>Identifiant</span></label>
+      <div class="repli" id="r-prenom"><div><label class="flottant">${IC.prenom}<input name="prenom" placeholder=" " autocomplete="given-name"><span>Prénom affiché</span></label></div></div>
+      <label class="flottant">${IC.cadenas}<input name="mdp" type="password" placeholder=" " autocomplete="current-password"><span>Mot de passe</span>
+        <button type="button" class="oeil" aria-label="Afficher le mot de passe">${IC.oeil}</button></label>
+      <p class="aide" id="a-aide"></p>
+      </div>
+      <p class="erreur" id="err" role="alert"></p>
+      <button class="btn auth-btn" type="submit"><span id="a-bouton"></span>${IC.fleche}</button>
     </form>
   </main>`;
-  app.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => ecranConnexion(b.dataset.mode));
-  app.querySelector("#f").onsubmit = async (ev) => {
+  const f = app.querySelector("#f"), err = app.querySelector("#err");
+  const appliquer = (m) => {
+    mode = m;
+    const t = TEXTES_AUTH[m], inscr = m === "inscription";
+    f.querySelector(".bascule").dataset.mode = m;
+    f.querySelectorAll(".bascule button").forEach((b) => b.setAttribute("aria-selected", b.dataset.mode === m));
+    app.querySelector("#a-titre").textContent = t.titre; app.querySelector("#a-sous").textContent = t.sous;
+    app.querySelector("#a-bouton").textContent = t.bouton;
+    app.querySelector("#r-prenom").classList.toggle("ouvert", inscr);
+    f.prenom.tabIndex = inscr ? 0 : -1;
+    f.mdp.autocomplete = inscr ? "new-password" : "current-password";
+    app.querySelector("#a-aide").textContent = inscr ? "Identifiant : lettres et chiffres, sans espace. Mot de passe : 6 caractères minimum." : "";
+    err.textContent = "";
+  };
+  appliquer(mode);
+  f.querySelectorAll(".bascule button").forEach((b) => b.onclick = () => appliquer(b.dataset.mode));
+  const oeil = f.querySelector(".oeil");
+  oeil.onclick = () => {
+    const vu = f.mdp.type === "password"; f.mdp.type = vu ? "text" : "password";
+    oeil.innerHTML = vu ? IC.oeilBarre : IC.oeil; oeil.setAttribute("aria-label", vu ? "Masquer le mot de passe" : "Afficher le mot de passe");
+  };
+  f.onsubmit = async (ev) => {
     ev.preventDefault();
-    const f = new FormData(ev.target), btn = ev.target.querySelector(".btn"), err = app.querySelector("#err");
-    const pseudo = nettoyerPseudo(String(f.get("pseudo")));
-    if (pseudo.length < 2) { err.textContent = "Identifiant trop court (lettres et chiffres)."; return; }
-    const email = `${pseudo}@rafiq.invalid`, password = String(f.get("mdp"));
-    btn.disabled = true; err.textContent = "";
+    const inscr = mode === "inscription", btn = f.querySelector(".auth-btn");
+    const pseudo = nettoyerPseudo(String(f.pseudo.value)), password = String(f.mdp.value), prenom = String(f.prenom.value).trim();
+    const secouer = (msg, champ) => { err.textContent = msg; champ?.focus(); const c = f.querySelector(".champs"); c.classList.remove("secoue"); void c.offsetWidth; c.classList.add("secoue"); };
+    if (pseudo.length < 2) return secouer("Identifiant trop court (lettres et chiffres).", f.pseudo);
+    if (inscr && !prenom) return secouer("Indique le prénom que les autres verront.", f.prenom);
+    if (password.length < 6) return secouer("Mot de passe trop court (6 caractères minimum).", f.mdp);
+    btn.disabled = true; btn.classList.add("charge"); err.textContent = "";
+    const email = `${pseudo}@rafiq.invalid`;
     const r = inscr
-      ? await sb.auth.signUp({ email, password, options: { data: { pseudo, prenom: String(f.get("prenom")).trim() } } })
+      ? await sb.auth.signUp({ email, password, options: { data: { pseudo, prenom } } })
       : await sb.auth.signInWithPassword({ email, password });
-    btn.disabled = false;
-    if (r.error) { err.textContent = traduire(r.error); return; }
+    btn.disabled = false; btn.classList.remove("charge");
+    if (r.error) secouer(traduire(r.error));
   };
 }
 
@@ -1424,5 +1498,18 @@ sb.auth.onAuthStateChange((evt, session) => {
   const avant = E.session?.user?.id;
   E.session = session;
   if (!session) { E.moi = null; E.lobbyCharge = null; }
-  if (evt === "INITIAL_SESSION" || avant !== session?.user?.id) { E.moi = null; setTimeout(rendre, 0); }
+  if (evt === "INITIAL_SESSION" || avant !== session?.user?.id) { E.moi = null; setTimeout(() => rendre().finally(finSplash), 0); }
 });
+
+// Écran d'ouverture : reste au moins le temps de son animation, puis s'efface
+function finSplash() {
+  const s = document.getElementById("splash");
+  if (!s || s.dataset.fin) return;
+  s.dataset.fin = "1";
+  setTimeout(() => {
+    document.documentElement.classList.remove("splash");
+    s.classList.add("fin");
+    setTimeout(() => s.remove(), 700);
+  }, Math.max(0, 1600 - performance.now()));
+}
+setTimeout(finSplash, 5000);

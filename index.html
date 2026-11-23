@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr">
+<html lang="fr" class="splash">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -13,14 +13,20 @@
   <link rel="apple-touch-icon" href="icones/apple-180.png">
   <link rel="icon" href="icones/192.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
+  <div id="splash" aria-hidden="true">
+    <div class="splash-c">
+      <svg class="anneaux" viewBox="0 0 64 64"><circle class="a1" cx="24" cy="32" r="11"/><circle class="a2" cx="40" cy="32" r="11"/></svg>
+      <b>Rafiq</b>
+    </div>
+  </div>
   <div id="app"></div>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="config.js?v=1"></script>
   <script src="vendor/supabase.js"></script>
   <script src="vendor/adhan.js"></script>
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>
