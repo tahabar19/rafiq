@@ -119,6 +119,9 @@ input[type=time], input[type=date] { -webkit-appearance: none; min-width: 0; }
 .duel { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; }
 .duel .qui { font-size: 13px; color: var(--doux); font-weight: 600; }
 .duel .pts { font-size: 34px; font-weight: 750; letter-spacing: -.03em; }
+.podium { display: grid; gap: 2px; }
+.podium > div { padding: 8px 10px; border-radius: 12px; }
+.podium > .moi { background: var(--vert-clair); }
 .duel .vs { font-size: 13px; color: var(--doux); }
 .barre { height: 8px; border-radius: 99px; background: var(--carte-2); overflow: hidden; display: flex; }
 .barre i { display: block; height: 100%; background: var(--vert); }
