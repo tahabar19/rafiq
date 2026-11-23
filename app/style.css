@@ -390,3 +390,100 @@ details[open] > summary { margin-bottom: 8px; }
 details.ajout > summary.btn { width: 100%; }
 details.ajout[open] > summary.btn { margin-bottom: 4px; }
 .podium + p { margin-top: 12px !important; }
+
+/* ---------- Anneaux du logo (dessinés à l'ouverture) ---------- */
+:root { --hero-1: #2A8565; --hero-2: #1F6F54; --hero-3: #134634; --or-logo: #E8C170; }
+@media (prefers-color-scheme: dark) { :root { --hero-1: #1E6A50; --hero-2: #17533F; --hero-3: #0C2C21; } }
+.anneaux { width: 64px; height: 64px; overflow: visible; }
+.anneaux circle { fill: none; stroke-width: 3.6; stroke-linecap: round; stroke-dasharray: 70 0; }
+.anneaux .a1 { stroke: #fff; transform-origin: 24px 32px; transform: rotate(-90deg); animation: trace 1s cubic-bezier(.65,0,.35,1) .1s both; }
+.anneaux .a2 { stroke: var(--or-logo); transform-origin: 40px 32px; transform: rotate(90deg); animation: trace 1s cubic-bezier(.65,0,.35,1) .3s both; }
+@keyframes trace { from { stroke-dasharray: 0 70; } to { stroke-dasharray: 70 0; } }
+
+/* ---------- Écran d'ouverture ---------- */
+#splash {
+  position: fixed; inset: 0; z-index: 200; display: grid; place-items: center;
+  background: radial-gradient(120% 70% at 80% 0%, var(--hero-1), transparent 60%), linear-gradient(165deg, var(--hero-2), var(--hero-3));
+  transition: opacity .55s ease, visibility 0s .6s;
+}
+#splash .splash-c { display: grid; justify-items: center; gap: 10px; transition: transform .6s cubic-bezier(.3,0,.2,1); }
+#splash .anneaux { width: 88px; height: 88px; }
+#splash b { color: #fff; font-size: 22px; font-weight: 650; letter-spacing: .02em; animation: monte .6s cubic-bezier(.2,.8,.2,1) .7s both; }
+#splash.fin { opacity: 0; visibility: hidden; pointer-events: none; }
+#splash.fin .splash-c { transform: scale(1.12); }
+html.splash .auth, html.splash .auth * { animation-play-state: paused !important; }
+
+/* ---------- Connexion / inscription ---------- */
+.auth { min-height: 100dvh; display: flex; flex-direction: column; max-width: 560px; margin: 0 auto; }
+.auth-hero {
+  position: relative; overflow: hidden; color: #fff; min-height: 38dvh; display: flex; align-items: flex-end;
+  padding: calc(var(--haut) + 32px) 24px 48px;
+  background: radial-gradient(120% 80% at 85% 0%, var(--hero-1), transparent 60%), linear-gradient(165deg, var(--hero-2), var(--hero-3));
+}
+@media (min-width: 561px) { .auth-hero { border-radius: 0 0 28px 28px; } }
+.auth-hero .motifs { position: absolute; inset: -40px; width: calc(100% + 80px); height: calc(100% + 80px); color: rgba(255,255,255,.11); animation: derive 18s ease-in-out infinite alternate, fondu 1.2s ease both; }
+@keyframes derive { to { transform: translate(-22px, -16px); } }
+.auth-hero .vagues { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; }
+.auth-hero .vagues path { stroke: rgba(255,255,255,.16); stroke-width: 1.3; vector-effect: non-scaling-stroke; stroke-dasharray: 900; animation: dessine 2.4s cubic-bezier(.4,0,.2,1) .2s both; }
+.auth-hero .vagues .v2 { stroke: color-mix(in srgb, var(--or-logo) 45%, transparent); animation-delay: .45s; }
+.auth-hero .vagues .v3 { stroke: rgba(255,255,255,.09); animation-delay: .7s; }
+@keyframes dessine { from { stroke-dashoffset: 900; } to { stroke-dashoffset: 0; } }
+.auth-marque { position: relative; animation: monte .7s cubic-bezier(.2,.8,.2,1) .15s both; }
+.auth-marque .anneaux { width: 52px; height: 52px; margin-left: -6px; }
+.auth-marque h1 { font-size: 30px; font-weight: 700; letter-spacing: -.03em; margin-top: 6px; }
+.auth-marque p { margin: 6px 0 0; font-size: var(--t-m); line-height: 1.5; color: rgba(255,255,255,.78); }
+
+.auth-feuille {
+  position: relative; flex: 1; margin-top: -24px; padding: 24px 20px calc(var(--bas) + 28px);
+  background: var(--carte); border-radius: 24px 24px 0 0; display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 -8px 30px rgba(0,0,0,.08); animation: feuille .75s cubic-bezier(.2,.8,.2,1) .25s both;
+}
+@keyframes feuille { from { transform: translateY(40px); opacity: 0; } }
+@media (min-width: 561px) { .auth-feuille { margin: -24px 16px 32px; border-radius: 24px; flex: none; } }
+.auth-invite { font-size: var(--t-s); background: var(--vert-clair); color: var(--vert); padding: 10px 12px; border-radius: var(--r-m); line-height: 1.4; }
+.auth-titre { margin: 4px 0 2px; }
+.auth-titre h2 { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+.auth-titre p { margin: 3px 0 0; color: var(--doux); font-size: var(--t-s); }
+
+.bascule { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border-radius: 12px; background: var(--carte-2); }
+.bascule::before {
+  content: ""; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 9px;
+  background: var(--carte); box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 0 0 1px rgba(0,0,0,.03); transition: transform .35s cubic-bezier(.3,.7,.2,1);
+}
+.bascule[data-mode=inscription]::before { transform: translateX(100%); }
+.bascule button { position: relative; border: 0; background: none; padding: 8px 4px; font-size: var(--t-s); font-weight: 500; color: var(--doux); cursor: pointer; transition: color .25s; }
+.bascule button[aria-selected=true] { color: var(--encre); font-weight: 600; }
+
+.flottant { position: relative; display: block; }
+.flottant input {
+  height: 54px; min-height: 54px; padding: 21px 44px 6px 44px; border-radius: 14px; border: 1px solid transparent;
+  background: var(--fond); transition: border-color .2s, background .2s, box-shadow .2s;
+}
+.flottant input:focus { background: var(--carte); border-color: var(--vert); box-shadow: 0 0 0 4px color-mix(in srgb, var(--vert) 14%, transparent); }
+.flottant > span {
+  position: absolute; left: 44px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--doux);
+  font-size: var(--t-m); transition: top .2s cubic-bezier(.3,.7,.2,1), font-size .2s, color .2s;
+}
+.flottant input:focus + span, .flottant input:not(:placeholder-shown) + span { top: 16px; font-size: 10.5px; font-weight: 600; letter-spacing: .03em; }
+.flottant input:focus + span { color: var(--vert); }
+.flottant .ic { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); width: 19px; height: 19px; fill: none; stroke: var(--doux); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; transition: stroke .2s; pointer-events: none; }
+.flottant:focus-within .ic { stroke: var(--vert); }
+.flottant input:-webkit-autofill { -webkit-box-shadow: 0 0 0 40px var(--fond) inset; -webkit-text-fill-color: var(--encre); }
+.flottant .oeil { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 40px; height: 40px; border: 0; background: none; border-radius: 10px; display: grid; place-items: center; cursor: pointer; color: var(--doux); }
+.flottant .oeil svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.repli { display: grid; grid-template-rows: 0fr; opacity: 0; margin-top: -12px; transition: grid-template-rows .35s cubic-bezier(.3,.7,.2,1), opacity .25s, margin-top .35s; }
+.repli > div { overflow: hidden; }
+.repli.ouvert { grid-template-rows: 1fr; opacity: 1; margin-top: 0; }
+.aide { margin: -2px 2px 0; font-size: 11.5px; color: var(--doux); line-height: 1.4; }
+.aide:empty, .auth .erreur:empty { display: none; }
+.auth .erreur { margin: 0 2px; }
+.auth-btn { height: 52px; min-height: 52px; border-radius: 14px; margin-top: 6px; font-size: 15px; background: linear-gradient(180deg, color-mix(in srgb, var(--vert) 88%, #fff), var(--vert)); box-shadow: 0 6px 18px color-mix(in srgb, var(--vert) 30%, transparent); }
+.auth-btn svg { width: 18px; height: 18px; transition: transform .2s; }
+.auth-btn:hover svg { transform: translateX(3px); }
+.auth-btn.charge span, .auth-btn.charge svg { opacity: 0; }
+.auth-btn.charge { position: relative; }
+.auth-btn.charge::after { content: ""; position: absolute; width: 20px; height: 20px; border-radius: 50%; border: 2.2px solid rgba(255,255,255,.35); border-top-color: #fff; animation: tourne .7s linear infinite; }
+@keyframes tourne { to { transform: rotate(360deg); } }
+.secoue { animation: secoue .4s cubic-bezier(.36,.07,.19,.97) both; }
+@keyframes secoue { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+.champs { display: flex; flex-direction: column; gap: 12px; }
